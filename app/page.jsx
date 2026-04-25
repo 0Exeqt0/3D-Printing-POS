@@ -733,6 +733,9 @@ export default function App() {
               finalizeJob={finalizeJob}
               saving={saving}
               saveError={saveError}
+              pricingConfig={pricingConfig}
+              setPricingConfig={setPricingConfig}
+              reloadFilaments={reloadFilaments}
             />
           )}
 
@@ -773,6 +776,7 @@ function POSView({
   clientName, setClientName, deadline, setDeadline,
   notes, setNotes, parts, setParts,
   finalizeJob, saving, saveError,
+  pricingConfig, setPricingConfig, reloadFilaments,
 }) {
   return (
     <div>
@@ -826,6 +830,12 @@ function POSView({
           hours={hours}
           setHours={setHours}
           selectedFil={selectedFil}
+          selectedPrinters={selectedPrinters}
+          printerDB={printerDB}
+          pricingConfig={pricingConfig}
+          setPricingConfig={setPricingConfig}
+          reloadFilaments={reloadFilaments}
+          filaments={filaments}
         />
       )}
       {step === 5 && <Step5 costResult={costResult} />}
@@ -1081,7 +1091,88 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
   );
 }
 
-function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
+function Step4({ grams, setGrams, hours, setHours, selectedFil, selectedPrinters, printerDB, pricingConfig, setPricingConfig, reloadFilaments, filaments }) {
+  const [adjFilPrice, setAdjFilPrice] = useState("");
+  const [adjElecRate, setAdjElecRate] = useState("");
+  const [savingParams, setSavingParams] = useState(false);
+  const [paramMsg, setParamMsg] = useState("");
+
+  useEffect(() => {
+    setAdjFilPrice("");
+  }, [selectedFil]);
+
+  useEffect(() => {
+    setAdjElecRate("");
+  }, [pricingConfig]);
+
+  const exactFilamentCost = selectedFil ? (grams / 1000) * Number(selectedFil.price_per_kg || 0) : 0;
+  const adjustedFilamentCost = adjFilPrice === "" ? null : (grams / 1000) * Number(adjFilPrice || 0);
+
+  const computeElecExact = () => {
+    if (!selectedPrinters || !selectedPrinters.length) return 0;
+    let elec = 0;
+    for (const alloc of selectedPrinters) {
+      const p = printerDB[alloc.id];
+      if (!p) continue;
+      const pct = alloc.pct / 100;
+      const pHours = hours * pct;
+      elec += (p.wattage / 1000) * pHours * (pricingConfig?.electricity_rate ?? 0);
+    }
+    return elec;
+  };
+
+  const exactElec = computeElecExact();
+  const adjustedElec = (() => {
+    if (adjElecRate === "" || !selectedPrinters || !selectedPrinters.length) return null;
+    let elec = 0;
+    for (const alloc of selectedPrinters) {
+      const p = printerDB[alloc.id];
+      if (!p) continue;
+      const pct = alloc.pct / 100;
+      const pHours = hours * pct;
+      elec += (p.wattage / 1000) * pHours * Number(adjElecRate || 0);
+    }
+    return elec;
+  })();
+
+  const saveParameters = async () => {
+    if (!selectedFil) return;
+    setSavingParams(true);
+    setParamMsg("");
+    try {
+      // update filament price only if user provided a value
+      if (adjFilPrice !== "" && Number(adjFilPrice) !== Number(selectedFil.price_per_kg)) {
+        const { error } = await supabase
+          .from("filaments")
+          .update({ price_per_kg: Number(adjFilPrice) })
+          .eq("id", selectedFil.id);
+        if (error) throw new Error(error.message);
+      }
+      // update pricing settings (electricity) only if provided
+      if (adjElecRate !== "" && Number(adjElecRate) !== Number(pricingConfig?.electricity_rate)) {
+        const { error } = await supabase
+          .from("pricing_settings")
+          .update({ electricity_rate: Number(adjElecRate), updated_at: new Date().toISOString() })
+          .eq("id", "default");
+        if (error) throw new Error(error.message);
+      }
+      // refresh local copies
+      if (reloadFilaments) await reloadFilaments();
+      const { data: psData, error: psErr } = await supabase.from("pricing_settings").select("*").eq("id", "default").single();
+      if (!psErr && psData) setPricingConfig({
+        electricity_rate: Number(psData.electricity_rate),
+        minimum_price: Number(psData.minimum_price),
+        markup_multiplier: Number(psData.markup_multiplier),
+        formula: psData.formula,
+      });
+      setParamMsg("Saved.");
+    } catch (err) {
+      setParamMsg(err.message || "Failed to save parameters");
+    } finally {
+      setSavingParams(false);
+    }
+  };
+
   return (
     <div className="card">
       <div className="card-title">
@@ -1136,8 +1227,7 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
         >
           <span>1g</span>
           <span style={{ color: T.textMuted }}>
-            {((grams / 1000) * (selectedFil?.price_per_kg || 0)).toFixed(2)} ₱
-            raw material
+            {exactFilamentCost.toFixed(2)} ₱ raw material (exact)
           </span>
           <span>500g</span>
         </div>
@@ -1182,6 +1272,64 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
           <div className="stat-val">{hours}h</div>
           <div className="stat-sub">{(hours * 60).toFixed(0)} min</div>
         </div>
+      </div>
+
+      {/* Parameter editor panel */}
+      <div style={{ marginTop: 18 }} className="card">
+        <div className="card-title">
+          <span className="card-title-dot" />Adjust Parameters
+        </div>
+        <div className="input-row">
+          <div className="input-group">
+            <label>Filament Price per kg (₱)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={adjFilPrice}
+              onChange={(e) => setAdjFilPrice(+e.target.value)}
+            />
+            <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
+              Exact consumed: ₱{exactFilamentCost.toFixed(2)} · Adjusted consumed: ₱{adjustedFilamentCost.toFixed(2)}
+            </div>
+          </div>
+          <div className="input-group">
+            <label>Electricity Rate (₱/kWh)</label>
+            <input
+              type="number"
+              step="0.01"
+              value={adjElecRate}
+              onChange={(e) => setAdjElecRate(+e.target.value)}
+            />
+            <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
+              Electricity exact: ₱{exactElec.toFixed(2)} · Adjusted: ₱{adjustedElec.toFixed(2)}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <button
+            className="btn btn-ghost"
+            onClick={() => {
+              setAdjFilPrice("");
+              setAdjElecRate("");
+              setParamMsg("");
+            }}
+            disabled={!selectedFil}
+          >
+            Reset
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={saveParameters}
+            disabled={!selectedFil || savingParams}
+          >
+            {savingParams ? "Saving…" : "Save Changes"}
+          </button>
+        </div>
+        {paramMsg && (
+          <div style={{ marginTop: 10 }} className={paramMsg === "Saved." ? "rec-card" : "error-msg"}>
+            {paramMsg}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1730,6 +1878,9 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         if (error) throw new Error(error.message);
       }
       await reloadFilaments();
+      // clear form to avoid reuse of previous values when opening again
+      setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, active: true });
+      setEditFil(null);
       setShowAddFil(false);
     } catch (err) {
       setOpError(err.message);
