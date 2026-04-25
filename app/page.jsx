@@ -456,6 +456,21 @@ export default function App() {
     if (!error) setFilaments(data || []);
   }, []);
 
+  // ── Reload printers helper ──
+  const reloadPrinters = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("printers")
+      .select("*")
+      .eq("active", true)
+      .order("name");
+    if (!error) {
+      setPrinterRows(data || []);
+      const dbMap = {};
+      for (const row of (data || [])) dbMap[row.id] = dbPrinterToInternal(row);
+      setPrinterDB(dbMap);
+    }
+  }, []);
+
   // Job state
   const [jobType, setJobType] = useState("");
   const [selectedPrinters, setSelectedPrinters] = useState([]);
@@ -736,6 +751,7 @@ export default function App() {
               pricingConfig={pricingConfig}
               setPricingConfig={setPricingConfig}
               reloadFilaments={reloadFilaments}
+              reloadPrinters={reloadPrinters}
             />
           )}
 
@@ -776,7 +792,7 @@ function POSView({
   clientName, setClientName, deadline, setDeadline,
   notes, setNotes, parts, setParts,
   finalizeJob, saving, saveError,
-  pricingConfig, setPricingConfig, reloadFilaments,
+  pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters,
 }) {
   return (
     <div>
@@ -838,6 +854,20 @@ function POSView({
           filaments={filaments}
         />
       )}
+      {/* Parameters aside panel (floating) */}
+      <ParametersAside
+        filaments={filaments}
+        printerRows={printerRows}
+        printerDB={printerDB}
+        selectedFil={selectedFil}
+        selectedPrinters={selectedPrinters}
+        pricingConfig={pricingConfig}
+        setPricingConfig={setPricingConfig}
+        reloadFilaments={reloadFilaments}
+        reloadPrinters={reloadPrinters}
+        grams={grams}
+        hours={hours}
+      />
       {step === 5 && <Step5 costResult={costResult} />}
       {step === 6 && (
         <Step6
@@ -1329,6 +1359,279 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, selectedPrinters
           <div style={{ marginTop: 10 }} className={paramMsg === "Saved." ? "rec-card" : "error-msg"}>
             {paramMsg}
           </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ParametersAside({
+  filaments,
+  printerRows,
+  printerDB,
+  selectedFil,
+  selectedPrinters,
+  pricingConfig,
+  setPricingConfig,
+  reloadFilaments,
+  reloadPrinters,
+  grams,
+  hours,
+}) {
+  const [filEdits, setFilEdits] = useState({});
+  const [printerEdits, setPrinterEdits] = useState({});
+  const [pricingDraft, setPricingDraft] = useState({
+    electricity_rate: "",
+    markup_multiplier: "",
+    minimum_price: "",
+    formula: "",
+  });
+  const [saving, setSaving] = useState({ fil: false, printers: false, pricing: false });
+  const [msg, setMsg] = useState("");
+
+  useEffect(() => {
+    // clear drafts so inputs remain empty by default (user requested no prefill)
+    setFilEdits({});
+    setPrinterEdits({});
+    setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
+    setMsg("");
+  }, [filaments, printerRows, pricingConfig]);
+
+  const onFilChange = (id, v) => setFilEdits((s) => ({ ...s, [id]: v }));
+  const onPrinterChange = (id, key, v) => setPrinterEdits((s) => ({ ...s, [id]: { ...(s[id] || {}), [key]: v } }));
+  const onPricingChange = (k, v) => setPricingDraft((s) => ({ ...s, [k]: v }));
+
+  const saveFilaments = async () => {
+    setSaving((s) => ({ ...s, fil: true }));
+    setMsg("");
+    try {
+      for (const [idRaw, valRaw] of Object.entries(filEdits)) {
+        if (valRaw === "" || valRaw == null) continue;
+        const id = idRaw;
+        const num = Number(valRaw);
+        if (Number.isNaN(num)) continue;
+        const f = filaments.find((x) => String(x.id) === String(id));
+        if (f && Number(f.price_per_kg) === num) continue;
+        const { error } = await supabase.from("filaments").update({ price_per_kg: num }).eq("id", id);
+        if (error) throw new Error(error.message);
+      }
+      await reloadFilaments();
+      setFilEdits({});
+      setMsg("Filaments saved.");
+    } catch (err) {
+      setMsg(err.message || "Failed to save filaments");
+    } finally {
+      setSaving((s) => ({ ...s, fil: false }));
+    }
+  };
+
+  const savePrinters = async () => {
+    setSaving((s) => ({ ...s, printers: true }));
+    setMsg("");
+    try {
+      for (const [idRaw, ed] of Object.entries(printerEdits)) {
+        const id = idRaw;
+        const p = printerRows.find((r) => String(r.id) === String(id));
+        if (!p) continue;
+        const payload = {};
+        if (ed.base !== undefined && ed.base !== "" && Number(ed.base) !== Number(p.base_rate)) payload.base_rate = Number(ed.base);
+        if (ed.eff !== undefined && ed.eff !== "" && Number(ed.eff) !== Number(p.efficiency)) payload.efficiency = Number(ed.eff);
+        if (ed.labor !== undefined && ed.labor !== "" && Number(ed.labor) !== Number(p.labor)) payload.labor = Number(ed.labor);
+        if (ed.mult !== undefined && ed.mult !== "" && Number(ed.mult) !== Number(p.multiplier)) payload.multiplier = Number(ed.mult);
+        if (Object.keys(payload).length === 0) continue;
+        const { error } = await supabase.from("printers").update(payload).eq("id", id);
+        if (error) throw new Error(error.message);
+      }
+      await reloadPrinters();
+      setPrinterEdits({});
+      setMsg("Printer parameters saved.");
+    } catch (err) {
+      setMsg(err.message || "Failed to save printers");
+    } finally {
+      setSaving((s) => ({ ...s, printers: false }));
+    }
+  };
+
+  const savePricing = async () => {
+    setSaving((s) => ({ ...s, pricing: true }));
+    setMsg("");
+    try {
+      const payload = {};
+      if (pricingDraft.electricity_rate !== "") payload.electricity_rate = Number(pricingDraft.electricity_rate);
+      if (pricingDraft.markup_multiplier !== "") payload.markup_multiplier = Number(pricingDraft.markup_multiplier);
+      if (pricingDraft.minimum_price !== "") payload.minimum_price = Number(pricingDraft.minimum_price);
+      if (pricingDraft.formula !== "") payload.formula = pricingDraft.formula;
+      if (Object.keys(payload).length === 0) {
+        setMsg("No pricing changes provided.");
+        setSaving((s) => ({ ...s, pricing: false }));
+        return;
+      }
+      const { error } = await supabase.from("pricing_settings").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", "default");
+      if (error) throw new Error(error.message);
+      const { data: psData, error: psErr } = await supabase.from("pricing_settings").select("*").eq("id", "default").single();
+      if (!psErr && psData) {
+        setPricingConfig({
+          electricity_rate: Number(psData.electricity_rate),
+          minimum_price: Number(psData.minimum_price),
+          markup_multiplier: Number(psData.markup_multiplier),
+          formula: psData.formula,
+        });
+      }
+      setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
+      setMsg("Pricing saved.");
+    } catch (err) {
+      setMsg(err.message || "Failed to save pricing");
+    } finally {
+      setSaving((s) => ({ ...s, pricing: false }));
+    }
+  };
+
+  // comparison helpers
+  const exactFilamentCost = selectedFil ? (grams / 1000) * Number(selectedFil.price_per_kg || 0) : 0;
+  const adjFilVal = selectedFil ? filEdits[String(selectedFil.id)] : undefined;
+  const adjustedFilamentCost = adjFilVal === undefined || adjFilVal === "" ? null : (grams / 1000) * Number(adjFilVal || 0);
+
+  const computeElecForRate = (rate) => {
+    if (!selectedPrinters || selectedPrinters.length === 0) return 0;
+    let e = 0;
+    for (const alloc of selectedPrinters) {
+      const p = printerDB[alloc.id];
+      if (!p) continue;
+      const pct = alloc.pct / 100;
+      const pHours = hours * pct;
+      e += (p.wattage / 1000) * pHours * rate;
+    }
+    return e;
+  };
+
+  const exactElec = computeElecForRate(Number(pricingConfig?.electricity_rate || 0));
+  const adjustedElec = pricingDraft.electricity_rate === "" ? null : computeElecForRate(Number(pricingDraft.electricity_rate));
+
+  const computePrinterCosts = (useEdits) => {
+    let real = 0;
+    let charged = 0;
+    for (const alloc of selectedPrinters || []) {
+      const p = printerDB[alloc.id];
+      if (!p) continue;
+      const pct = alloc.pct / 100;
+      const pHours = hours * pct;
+      const edits = printerEdits[String(alloc.id)] || {};
+      const base = useEdits && edits.base !== undefined && edits.base !== "" ? Number(edits.base) : p._p.base;
+      const mult = useEdits && edits.mult !== undefined && edits.mult !== "" ? Number(edits.mult) : p._p.mult;
+      const labor = useEdits && edits.labor !== undefined && edits.labor !== "" ? Number(edits.labor) : p._p.labor;
+      const pr = pHours * base;
+      const pc = pr * mult * labor;
+      real += pr;
+      charged += pc;
+    }
+    return { real, charged };
+  };
+
+  const exactPrinter = computePrinterCosts(false);
+  const adjustedPrinter = Object.keys(printerEdits).length === 0 ? null : computePrinterCosts(true);
+
+  const totalExact = exactFilamentCost + exactElec + exactPrinter.real;
+  const totalAdjusted = (adjustedFilamentCost !== null ? adjustedFilamentCost : exactFilamentCost) + (adjustedElec !== null ? adjustedElec : exactElec) + (adjustedPrinter !== null ? adjustedPrinter.real : exactPrinter.real);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        right: 20,
+        top: 96,
+        width: 360,
+        maxHeight: "78vh",
+        overflowY: "auto",
+        zIndex: 80,
+      }}
+    >
+      <div className="card">
+        <div className="card-title">
+          <span className="card-title-dot" />Parameters
+        </div>
+
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 8 }}>Filaments (edit price/kg)</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {filaments.map((f) => (
+              <div key={f.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <span className="filament-color-dot" style={{ background: getFilColor(f.color) }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, color: T.text }}>{f.brand} {f.color}</div>
+                  <input
+                    type="number"
+                    placeholder={`${f.price_per_kg}`}
+                    value={filEdits[String(f.id)] ?? ""}
+                    onChange={(e) => onFilChange(String(f.id), e.target.value === "" ? "" : e.target.value)}
+                    style={{ width: "100%" }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => setFilEdits({})}>Reset</button>
+            <button className="btn btn-primary" onClick={saveFilaments} disabled={saving.fil}>{saving.fil ? "Saving…" : "Save Filaments"}</button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 8 }}>Printers (base, eff, labor, mult)</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            {printerRows.map((p) => (
+              <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8, alignItems: "center" }}>
+                <div style={{ fontSize: 13, color: T.text }}>{p.name}</div>
+                <input placeholder={`${p.base_rate ?? p._p?.base ?? "0"}`} value={printerEdits[String(p.id)]?.base ?? ""} onChange={(e) => onPrinterChange(String(p.id), "base", e.target.value === "" ? "" : e.target.value)} />
+                <input placeholder={`${p.efficiency ?? p._p?.eff ?? "0"}`} value={printerEdits[String(p.id)]?.eff ?? ""} onChange={(e) => onPrinterChange(String(p.id), "eff", e.target.value === "" ? "" : e.target.value)} />
+                <input placeholder={`${p.labor ?? p._p?.labor ?? "0"}`} value={printerEdits[String(p.id)]?.labor ?? ""} onChange={(e) => onPrinterChange(String(p.id), "labor", e.target.value === "" ? "" : e.target.value)} />
+                <input placeholder={`${p.multiplier ?? p._p?.mult ?? "0"}`} value={printerEdits[String(p.id)]?.mult ?? ""} onChange={(e) => onPrinterChange(String(p.id), "mult", e.target.value === "" ? "" : e.target.value)} />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => setPrinterEdits({})}>Reset</button>
+            <button className="btn btn-primary" onClick={savePrinters} disabled={saving.printers}>{saving.printers ? "Saving…" : "Save Printers"}</button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 8 }}>Pricing</div>
+          <div style={{ display: "grid", gap: 8 }}>
+            <input placeholder={`${pricingConfig?.electricity_rate ?? "0"}`} value={pricingDraft.electricity_rate} onChange={(e) => onPricingChange("electricity_rate", e.target.value === "" ? "" : e.target.value)} />
+            <input placeholder={`${pricingConfig?.markup_multiplier ?? "1"}`} value={pricingDraft.markup_multiplier} onChange={(e) => onPricingChange("markup_multiplier", e.target.value === "" ? "" : e.target.value)} />
+            <input placeholder={`${pricingConfig?.minimum_price ?? "0"}`} value={pricingDraft.minimum_price} onChange={(e) => onPricingChange("minimum_price", e.target.value === "" ? "" : e.target.value)} />
+            <textarea placeholder={pricingConfig?.formula ?? "formula"} value={pricingDraft.formula} onChange={(e) => onPricingChange("formula", e.target.value)} rows={3} style={{ resize: "vertical" }} />
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button className="btn btn-ghost" onClick={() => setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" })}>Reset</button>
+            <button className="btn btn-primary" onClick={savePricing} disabled={saving.pricing}>{saving.pricing ? "Saving…" : "Save Pricing"}</button>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 12, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+          <div style={{ fontSize: 12, color: T.textMuted }}>Comparison (exact vs adjusted)</div>
+          <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ color: T.textMuted }}>Filament</div>
+              <div style={{ fontFamily: T.fontMono }}>{`₱${exactFilamentCost.toFixed(2)} → ${adjustedFilamentCost !== null ? `₱${adjustedFilamentCost.toFixed(2)}` : "—"}`}</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ color: T.textMuted }}>Electricity</div>
+              <div style={{ fontFamily: T.fontMono }}>{`₱${exactElec.toFixed(2)} → ${adjustedElec !== null ? `₱${adjustedElec.toFixed(2)}` : "—"}`}</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between" }}>
+              <div style={{ color: T.textMuted }}>Printers (usage)</div>
+              <div style={{ fontFamily: T.fontMono }}>{`₱${exactPrinter.real.toFixed(2)} → ${adjustedPrinter !== null ? `₱${adjustedPrinter.real.toFixed(2)}` : "—"}`}</div>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", borderTop: `1px dashed ${T.border}`, paddingTop: 8 }}>
+              <div style={{ fontWeight: 700 }}>Total</div>
+              <div style={{ fontFamily: T.fontMono, fontWeight: 700 }}>{`₱${totalExact.toFixed(2)} → ${totalAdjusted !== null ? `₱${totalAdjusted.toFixed(2)}` : "—"}`}</div>
+            </div>
+          </div>
+        </div>
+
+        {msg && (
+          <div style={{ marginTop: 10 }} className={msg.startsWith("Failed") ? "error-msg" : "rec-card"}>{msg}</div>
         )}
       </div>
     </div>
@@ -1902,7 +2205,11 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
 
   const removeFilament = async (id) => {
     const { error } = await supabase.from("filaments").delete().eq("id", id);
-    if (!error) setFilaments((prev) => prev.filter((f) => f.id !== id));
+    if (error) {
+      setOpError(error.message || "Failed to delete filament");
+      return;
+    }
+    setFilaments((prev) => prev.filter((f) => f.id !== id));
   };
 
   return (
