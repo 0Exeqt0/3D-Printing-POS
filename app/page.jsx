@@ -513,7 +513,7 @@ export default function App() {
         {/* SIDEBAR */}
         <aside className="sidebar">
           <div className="logo">
-            <div className="logo-mark">3DP · POS</div>
+            <div className="logo-mark">3D Printing POS</div>
             <div className="logo-name">TechCraft Innovator</div>
           </div>
           <div className="nav-section">
@@ -908,7 +908,7 @@ function ReceiptView({ job, onNew }) {
         <div className="page-sub">Receipt generated for {job.clientName}</div>
       </div>
       <div className="receipt">
-        <h2>PRINTFORGE</h2>
+        <h2>TechCraft Innovator</h2>
         <div className="sub">3D Print Receipt</div>
         <div className="sub">{now.toLocaleDateString()} · {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
         <hr />
