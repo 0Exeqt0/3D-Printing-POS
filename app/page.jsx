@@ -1286,10 +1286,10 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, selectedPrinters
               type="number"
               step="0.01"
               value={adjFilPrice}
-              onChange={(e) => setAdjFilPrice(+e.target.value)}
+              onChange={(e) => setAdjFilPrice(e.target.value === "" ? "" : +e.target.value)}
             />
             <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
-              Exact consumed: ₱{exactFilamentCost.toFixed(2)} · Adjusted consumed: ₱{adjustedFilamentCost.toFixed(2)}
+              Exact consumed: ₱{exactFilamentCost.toFixed(2)} · Adjusted consumed: ₱{adjustedFilamentCost !== null ? adjustedFilamentCost.toFixed(2) : "—"}
             </div>
           </div>
           <div className="input-group">
@@ -1298,10 +1298,10 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, selectedPrinters
               type="number"
               step="0.01"
               value={adjElecRate}
-              onChange={(e) => setAdjElecRate(+e.target.value)}
+              onChange={(e) => setAdjElecRate(e.target.value === "" ? "" : +e.target.value)}
             />
             <div style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
-              Electricity exact: ₱{exactElec.toFixed(2)} · Adjusted: ₱{adjustedElec.toFixed(2)}
+              Electricity exact: ₱{exactElec.toFixed(2)} · Adjusted: ₱{adjustedElec !== null ? adjustedElec.toFixed(2) : "—"}
             </div>
           </div>
         </div>
