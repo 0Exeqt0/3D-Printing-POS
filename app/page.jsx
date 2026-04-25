@@ -514,7 +514,7 @@ export default function App() {
         <aside className="sidebar">
           <div className="logo">
             <div className="logo-mark">3DP · POS</div>
-            <div className="logo-name">PrintForge</div>
+            <div className="logo-name">TechCraft Innovator</div>
           </div>
           <div className="nav-section">
             <div className="nav-label">Workflow</div>
