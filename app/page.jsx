@@ -1655,7 +1655,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
     const types = [...new Set(filaments.map((f) => f.type))].filter(Boolean).sort();
     const finishes = [...new Set(filaments.map((f) => f.finish))].filter(Boolean).sort();
     setDbFilamentTypes(types.length > 0 ? types : ["PLA", "PLA+", "Silk", "PETG"]);
-    setDbFinishTypes(finishes.length > 0 ? finishes : ["matte", "glossy", "silk", "metallic"]);
+    setDbFinishTypes(finishes.length > 0 ? finishes : ["Normal","Matte", "Glossy", "Silk", "Metallic"]);
   }, [filaments]);
 
   const openAdd = () => {
@@ -1663,7 +1663,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
       brand: "",
       type: dbFilamentTypes[0] || "PLA",
       color: "",
-      finish: dbFinishTypes[0] || "matte",
+      finish: dbFinishTypes[0] || "Matte",
       price_per_kg: 25,
       active: true,
     });
