@@ -2059,7 +2059,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
   );
 }
 
-
+function JobsView({ jobs }) {
   if (jobs.length === 0)
     return (
       <div>
