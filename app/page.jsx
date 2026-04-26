@@ -71,14 +71,11 @@ function _computeEngine(job, PRINTER_DB) {
   const { printers, filament, grams, hours, elecRate = 0.12, pricingConfig = DEFAULT_PRICING_CONFIG } = job;
   if (!filament || !grams || !hours || !printers?.length) return null;
 
-  // Use true_cost_per_kg if set, fall back to price_per_kg
   const trueCostKg = Number(filament.true_cost_per_kg ?? filament.price_per_kg ?? 0);
-  // Use selling_price_per_kg if set, fall back to type/finish multiplier on true cost
   const sellingKg = Number(filament.selling_price_per_kg ?? 0);
   const filamentReal = (grams / 1000) * trueCostKg;
   const filamentCharged = (() => {
     if (sellingKg > 0) return (grams / 1000) * sellingKg;
-    // Fallback: apply type/finish multipliers on true cost
     const base = filamentReal;
     const typeMulti = { PLA: 1.6, "PLA+": 1.75, Silk: 2.1, PETG: 1.85 }[filament.type] ?? 1.7;
     const finishMulti = { matte: 1.0, glossy: 1.05, silk: 1.15, metallic: 1.1 }[filament.finish] ?? 1.0;
@@ -115,25 +112,32 @@ function _computeEngine(job, PRINTER_DB) {
   let formulaError = "";
   let computedChargedTotal = defaultChargedTotal;
 
+  const elecKwh = +(printers.reduce((acc, alloc) => {
+    const p = PRINTER_DB[alloc.id]; if (!p) return acc;
+    return acc + (p.wattage / 1000) * (hours * alloc.pct / 100);
+  }, 0).toFixed(4));
+
   try {
+    // FIX: all aliases defined together so none are undefined in formula
     const formulaVariables = {
-      grams, hours,
-      filament_real: filamentReal, filament_charged: filamentCharged,
-      electricity_real: elecReal, electricity_charged: elecCharged,
-      printer_real: printerReal, printer_charged: printerCharged,
-      real_total: totalReal, default_charged_total: defaultChargedTotal,
+      grams,
+      hours,
+      filament_real: filamentReal,
+      filament_charged: filamentCharged,
+      electricity_real: elecReal,
+      electricity_charged: elecCharged,
+      printer_real: printerReal,
+      printer_charged: printerCharged,
+      real_total: totalReal,
+      default_charged_total: defaultChargedTotal,
       markup_multiplier: Number(pricingConfig.markup_multiplier || 1),
       minimum_price: Number(pricingConfig.minimum_price || 0),
-      // Convenience per-gram/per-hour aliases
       filament_price_per_gram: trueCostKg / 1000,
-      filament_selling_per_gram: sellingKg > 0 ? sellingKg / 1000 : (trueCostKg / 1000),
+      filament_selling_per_gram: sellingKg > 0 ? sellingKg / 1000 : trueCostKg / 1000,
       true_cost_per_kg: trueCostKg,
       selling_price_per_kg: sellingKg > 0 ? sellingKg : trueCostKg,
-      elec_kwh: +(printers.reduce((acc, alloc) => {
-        const p = PRINTER_DB[alloc.id]; if (!p) return acc;
-        return acc + (p.wattage / 1000) * (hours * alloc.pct / 100);
-      }, 0).toFixed(4)),
-      // Common user-defined aliases
+      elec_kwh: elecKwh,
+      // Aliases — all defined here so formulas referencing any of them work
       machine_rate: printerReal,
       machine_charged: printerCharged,
       filament_cost: filamentReal,
@@ -169,11 +173,7 @@ function _computeEngine(job, PRINTER_DB) {
     recommendation: { lowest_cost: lowestCost, fastest, highest_profit: highestProfit },
     _grams: grams,
     _hours: hours,
-    _elecKwh: +(printers.reduce((acc, alloc) => {
-      const p = PRINTER_DB[alloc.id];
-      if (!p) return acc;
-      return acc + (p.wattage / 1000) * (hours * alloc.pct / 100);
-    }, 0).toFixed(4)),
+    _elecKwh: elecKwh,
   };
 }
 
@@ -346,7 +346,6 @@ select option { background: ${T.bgCard}; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .db-error { padding: 20px 24px; background: rgba(255,92,92,0.08); border: 1px solid rgba(255,92,92,0.2); border-radius: 10px; font-size: 13px; color: ${T.danger}; margin-bottom: 16px; }
 .empty-state { text-align: center; padding: 40px 24px; color: ${T.textDim}; font-size: 13px; }
-/* dual-bar comparison */
 .cmp-row { padding: 12px 0; border-top: 1px solid ${T.border}; }
 .cmp-row:first-child { border-top: none; }
 .cmp-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px; }
@@ -361,18 +360,12 @@ select option { background: ${T.bgCard}; }
 .dual-bar-legend { display: flex; gap: 12px; margin-top: 2px; }
 .dual-bar-legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: ${T.textDim}; }
 .dual-bar-legend-dot { width: 8px; height: 4px; border-radius: 2px; }
-/* params page */
-.params-section { margin-bottom: 0; }
-.params-section + .params-section { margin-top: 0; }
 .params-field-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid ${T.border}; }
 .params-field-row:last-child { border-bottom: none; }
 .params-field-info { flex: 1; min-width: 0; }
 .params-field-name { font-size: 13px; color: ${T.text}; font-weight: 500; display: flex; align-items: center; gap: 8px; }
 .params-field-sub { font-size: 11px; color: ${T.textDim}; margin-top: 2px; font-family: ${T.fontMono}; }
 .params-field-input { width: 130px; flex-shrink: 0; }
-.params-printer-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; }
-.params-printer-label { font-size: 11px; color: ${T.textDim}; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 4px; }
-/* confirm delete modal */
 .confirm-modal { background: ${T.bgCard}; border: 1px solid rgba(255,92,92,0.3); border-radius: 16px; padding: 28px; width: 400px; max-width: 90vw; }
 .confirm-modal h3 { font-size: 16px; font-weight: 600; color: ${T.text}; margin-bottom: 10px; }
 .confirm-modal p { font-size: 13px; color: ${T.textMuted}; margin-bottom: 20px; line-height: 1.5; }
@@ -403,8 +396,6 @@ select option { background: ${T.bgCard}; }
   .modal-overlay { align-items: flex-end; }
   .modal, .confirm-modal { width: 100%; max-width: none; border-radius: 20px 20px 0 0; padding: 22px; }
   .receipt { max-width: 100%; }
-  .params-printer-grid { grid-template-columns: 1fr 1fr; }
-  .params-field-input { width: 100px; }
 }
 
 @media print {
@@ -501,6 +492,11 @@ export default function App() {
   const [filSearch, setFilSearch] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [activeOrderId, setActiveOrderId] = useState(null);
+
+  const filteredFils = filaments.filter(
+    (f) => f.active && (filSearch === "" || `${f.brand} ${f.type} ${f.color}`.toLowerCase().includes(filSearch.toLowerCase()))
+  );
 
   const togglePrinter = (id) => {
     setSelectedPrinters((prev) => {
@@ -577,7 +573,6 @@ export default function App() {
       }
       const job = { id: jobData.id, date: new Date().toLocaleDateString(), jobType, clientName, deadline, notes, parts, grams, hours, filament: selectedFil, printers: selectedPrinters, printerDB, cost: costResult, finalPrice };
       setCompletedJobs((prev) => [job, ...prev]);
-      // Mark linked job order as Done
       if (activeOrderId) {
         await supabase.from("job_orders").update({ status: "Done", updated_at: new Date().toISOString() }).eq("id", activeOrderId);
         setJobOrders((prev) => prev.map((o) => o.id === activeOrderId ? { ...o, status: "Done" } : o));
@@ -590,15 +585,11 @@ export default function App() {
     }
   };
 
-  const [activeOrderId, setActiveOrderId] = useState(null); // job_order id linked to current New Job
-
   const startJobFromOrder = (order) => {
-    // Reset first, then pre-fill from order data
     setStep(1); setJobType(""); setSelectedPrinters([]); setSelectedFil(null);
     setGrams(50); setHours(3); setCostResult(null); setCustomPrice(null);
     setClientName(""); setDeadline(""); setNotes(""); setParts("");
     setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
-    // Pre-fill from order
     if (order.filament_id) {
       const fil = filaments.find((f) => f.id === order.filament_id);
       if (fil) setSelectedFil(fil);
@@ -625,42 +616,11 @@ export default function App() {
     setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
   };
 
-  const [savingOrder, setSavingOrder] = useState(false);
-  const [saveOrderError, setSaveOrderError] = useState("");
-
-  const saveAsOrder = async () => {
-    if (!clientName.trim()) { setSaveOrderError("Client name is required to save an order."); return; }
-    setSavingOrder(true); setSaveOrderError("");
-    const payload = {
-      client_name: clientName.trim(),
-      title: parts || `Job for ${clientName.trim()}`,
-      description: notes || "",
-      filament_id: selectedFil?.id || null,
-      printer_id: selectedPrinters[0]?.id || null,
-      deadline: deadline || null,
-      status: "Queued",
-      priority: "Normal",
-      estimated_grams: Number(grams) > 0 ? Number(grams) : null,
-      estimated_hours: Number(hours) > 0 ? Number(hours) : null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-    try {
-      const { error } = await supabase.from("job_orders").insert(payload);
-      if (error) throw new Error(error.message);
-      // Reload orders
-      const { data } = await supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false });
-      if (data) setJobOrders(data);
-      resetJob();
-      setView("orders");
-    } catch (err) {
-      setSaveOrderError(err.message || "Failed to save order.");
-    } finally {
-      setSavingOrder(false);
-    }
+  // FIX: "Add New Order" just goes to New Job wizard — no separate form
+  const handleAddNewOrder = () => {
+    resetJob();
+    setView("pos");
   };
-    (f) => f.active && (filSearch === "" || `${f.brand} ${f.type} ${f.color}`.toLowerCase().includes(filSearch.toLowerCase()))
-  );
 
   if (dbLoading) {
     return (
@@ -735,7 +695,14 @@ export default function App() {
               grams={grams} hours={hours} selectedFil={selectedFil} selectedPrinters={selectedPrinters}
             />
           )}
-          {view === "orders" && <JobOrdersView jobOrders={jobOrders} setJobOrders={setJobOrders} filaments={filaments} printerRows={printerRows} startJobFromOrder={startJobFromOrder} onAddNew={() => { resetJob(); setView("pos"); }} />}
+          {view === "orders" && (
+            <JobOrdersView
+              jobOrders={jobOrders} setJobOrders={setJobOrders}
+              filaments={filaments} printerRows={printerRows}
+              startJobFromOrder={startJobFromOrder}
+              onAddNew={handleAddNewOrder}
+            />
+          )}
           {view === "jobs" && <JobsView jobs={completedJobs} />}
           {view === "analytics" && <AnalyticsView jobs={completedJobs} />}
           {view === "settings" && <PricingSettingsView pricingConfig={pricingConfig} setPricingConfig={setPricingConfig} />}
@@ -755,7 +722,6 @@ function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selecte
         <div className="page-sub">Follow the steps to configure and price your job</div>
       </div>
 
-      {/* Active order banner */}
       {activeOrder && (
         <div style={{ marginBottom: 16, padding: "10px 16px", background: "rgba(91,156,246,0.10)", border: "1px solid rgba(91,156,246,0.3)", borderRadius: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <span style={{ fontSize: 12, color: T.info }}>📋 From Job Order:</span>
@@ -765,6 +731,7 @@ function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selecte
           <span style={{ marginLeft: "auto", fontSize: 11, color: T.textDim }}>Will mark order Done on finalize</span>
         </div>
       )}
+
       <div className="stepper">
         {STEPS.map((s, i) => (
           <div key={s.id} className="step-item">
@@ -885,9 +852,9 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
               <div className="fil-meta">
                 {f.brand} · {f.finish}
                 {f.true_cost_per_kg != null
-                  ? <> · <span style={{ color: T.info }}>true: ₱{(f.true_cost_per_kg/1000).toFixed(4)}/g</span></>
-                  : <> · <span style={{ color: T.textDim }}>₱{(f.price_per_kg/1000).toFixed(4)}/g</span></>}
-                {f.selling_price_per_kg != null && <> · <span style={{ color: T.accent }}>sell: ₱{(f.selling_price_per_kg/1000).toFixed(4)}/g</span></>}
+                  ? <> · <span style={{ color: T.info }}>true: ₱{(f.true_cost_per_kg / 1000).toFixed(4)}/g</span></>
+                  : <> · <span style={{ color: T.textDim }}>₱{(f.price_per_kg / 1000).toFixed(4)}/g</span></>}
+                {f.selling_price_per_kg != null && <> · <span style={{ color: T.accent }}>sell: ₱{(f.selling_price_per_kg / 1000).toFixed(4)}/g</span></>}
               </div>
             </div>
           ))}
@@ -897,7 +864,6 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
   );
 }
 
-// Step 4 — number inputs for grams and split hrs/min
 function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
   const exactFilamentCost = selectedFil ? (grams / 1000) * Number(selectedFil.price_per_kg || 0) : 0;
   const wholeHrs = Math.floor(hours);
@@ -976,37 +942,10 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
   );
 }
 
-// Step 5 — cost breakdown with actual vs adjusted comparison (auto-populated from DB)
+// ─── STEP 5 — Clean cost breakdown only, no confusing comparison inputs ───────
 function Step5({ costResult, pricingConfig, selectedFil }) {
-  // Pre-populate from filament profile and pricingConfig — user can still override
-  const [trueFilKg, setTrueFilKg] = useState(() => selectedFil?.true_cost_per_kg != null ? String(selectedFil.true_cost_per_kg) : "");
-  const [sellingFilKg, setSellingFilKg] = useState(() => selectedFil?.selling_price_per_kg != null ? String(selectedFil.selling_price_per_kg) : "");
-  const [trueElec, setTrueElec] = useState(() => pricingConfig?.true_electricity_cost != null ? String(pricingConfig.true_electricity_cost) : "");
-  const [sellingElec, setSellingElec] = useState(() => pricingConfig?.selling_electricity_cost != null ? String(pricingConfig.selling_electricity_cost) : "");
-
-  // Sync if filament or pricingConfig changes (e.g. navigating back/forward)
-  useEffect(() => {
-    if (selectedFil?.true_cost_per_kg != null) setTrueFilKg(String(selectedFil.true_cost_per_kg));
-    if (selectedFil?.selling_price_per_kg != null) setSellingFilKg(String(selectedFil.selling_price_per_kg));
-  }, [selectedFil]);
-  useEffect(() => {
-    if (pricingConfig?.true_electricity_cost != null) setTrueElec(String(pricingConfig.true_electricity_cost));
-    if (pricingConfig?.selling_electricity_cost != null) setSellingElec(String(pricingConfig.selling_electricity_cost));
-  }, [pricingConfig]);
-
   if (!costResult)
     return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Computing costs…</p></div>;
-
-  const grams = costResult._grams ?? 0;
-  const hours = costResult._hours ?? 0;
-
-  // Derived per-gram values
-  const trueFilKgNum = trueFilKg !== "" ? Number(trueFilKg) : null;
-  const sellingFilKgNum = sellingFilKg !== "" ? Number(sellingFilKg) : null;
-  const trueFilG = trueFilKgNum !== null ? trueFilKgNum / 1000 : null;
-  const sellingFilG = sellingFilKgNum !== null ? sellingFilKgNum / 1000 : null;
-  const trueElecNum = trueElec !== "" ? Number(trueElec) : null;
-  const sellingElecNum = sellingElec !== "" ? Number(sellingElec) : null;
 
   const items = [
     { label: "Filament", ...costResult.filament },
@@ -1014,18 +953,39 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
     { label: "Printer Usage", ...costResult.printer_usage },
   ];
 
-  const maxCharged = Math.max(...items.map((i) => i.charged));
+  const maxCharged = Math.max(...items.map((i) => i.charged), 0.01);
 
-  // Adjusted cost calculations (used in what-if section)
-  const adjFilReal = trueFilKgNum !== null ? (costResult._grams ?? 0) / 1000 * trueFilKgNum : costResult.filament.real;
-  const adjFilSelling = sellingFilKgNum !== null ? (costResult._grams ?? 0) / 1000 * sellingFilKgNum : costResult.filament.charged;
-  const adjElecReal = trueElecNum !== null ? costResult._elecKwh * trueElecNum : costResult.electricity.real;
-  const adjElecSelling = sellingElecNum !== null ? costResult._elecKwh * sellingElecNum : costResult.electricity.charged;
+  // Filament pricing info for context
+  const hasTrueCost = selectedFil?.true_cost_per_kg != null;
+  const hasSellingPrice = selectedFil?.selling_price_per_kg != null;
 
   return (
     <div>
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Cost Breakdown</div>
+
+        {/* Filament pricing context */}
+        {selectedFil && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, padding: "10px 14px", background: T.bgInput, borderRadius: 8 }}>
+            <span className="filament-color-dot" style={{ background: getFilColor(selectedFil.color), border: "1px solid rgba(255,255,255,0.1)", alignSelf: "center" }} />
+            <span style={{ fontSize: 12, color: T.text }}>{selectedFil.brand} {selectedFil.type} — {selectedFil.color}</span>
+            {hasTrueCost && (
+              <span style={{ fontSize: 11, color: T.info, fontFamily: T.fontMono }}>
+                true: ₱{selectedFil.true_cost_per_kg}/kg
+              </span>
+            )}
+            {hasSellingPrice && (
+              <span style={{ fontSize: 11, color: T.accent, fontFamily: T.fontMono }}>
+                selling: ₱{selectedFil.selling_price_per_kg}/kg
+              </span>
+            )}
+            {!hasTrueCost && (
+              <span style={{ fontSize: 11, color: T.textDim }}>
+                ref: ₱{selectedFil.price_per_kg}/kg (no true cost set)
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Legend */}
         <div className="dual-bar-legend" style={{ marginBottom: 16 }}>
@@ -1051,13 +1011,13 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
               </div>
             </div>
             <div className="dual-bar">
-              <div className="dual-bar-charged" style={{ width: `${maxCharged > 0 ? (item.charged / maxCharged) * 100 : 0}%` }} />
-              <div className="dual-bar-real" style={{ width: `${maxCharged > 0 ? (item.real / maxCharged) * 100 : 0}%` }} />
+              <div className="dual-bar-charged" style={{ width: `${(item.charged / maxCharged) * 100}%` }} />
+              <div className="dual-bar-real" style={{ width: `${(item.real / maxCharged) * 100}%` }} />
             </div>
           </div>
         ))}
 
-        {/* Totals row */}
+        {/* Totals */}
         <div style={{ marginTop: 16, padding: "12px 14px", background: T.bgInput, borderRadius: 9, border: `1px solid ${T.border}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Total</span>
@@ -1079,127 +1039,29 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
         </div>
       </div>
 
-      {/* ── Actual vs Adjusted Comparison ── */}
-      <div className="card">
-        <div className="card-title"><span className="card-title-dot" />Actual vs Adjusted Cost Comparison</div>
-        <p style={{ fontSize: 12, color: T.textDim, marginBottom: 16 }}>
-          Values are auto-filled from the filament profile and pricing settings. Override any field to compare scenarios.
-        </p>
-
-        <div className="grid2" style={{ marginBottom: 16 }}>
-          {/* Filament */}
-          <div style={{ background: T.bgInput, borderRadius: 10, padding: "14px 16px", border: `1px solid ${T.border}` }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: T.textMuted, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.8px" }}>Filament Cost</div>
-            <div className="input-group" style={{ marginBottom: 8 }}>
-              <label>True cost (₱/kg)</label>
-              <div className="input-addon">
-                <span className="input-prefix">₱</span>
-                <input type="number" min={0} step={0.01} value={trueFilKg} placeholder="e.g. 800" onChange={(e) => setTrueFilKg(e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
+      {/* Per-printer breakdown (if multi-printer) */}
+      {costResult.per_printer && costResult.per_printer.length > 1 && (
+        <div className="card">
+          <div className="card-title"><span className="card-title-dot" />Per-Printer Breakdown</div>
+          {costResult.per_printer.map((pp) => (
+            <div key={pp.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                <span style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{pp.name}</span>
+                <span style={{ fontSize: 12, color: T.textMuted, fontFamily: T.fontMono }}>{pp.pct}% · {pp.hours}h · {pp.grams}g</span>
               </div>
-              {trueFilKgNum !== null && <div style={{ fontSize: 11, color: T.textDim, marginTop: 3 }}>₱/g: <span style={{ fontFamily: T.fontMono, color: T.info }}>{trueFilG.toFixed(4)}</span></div>}
-            </div>
-            <div className="input-group" style={{ marginBottom: 0 }}>
-              <label>Selling cost (₱/kg)</label>
-              <div className="input-addon">
-                <span className="input-prefix">₱</span>
-                <input type="number" min={0} step={0.01} value={sellingFilKg} placeholder="e.g. 1400" onChange={(e) => setSellingFilKg(e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
-              </div>
-              {sellingFilKgNum !== null && <div style={{ fontSize: 11, color: T.textDim, marginTop: 3 }}>₱/g: <span style={{ fontFamily: T.fontMono, color: T.accent }}>{sellingFilG.toFixed(4)}</span></div>}
-            </div>
-          </div>
-
-          {/* Electricity */}
-          <div style={{ background: T.bgInput, borderRadius: 10, padding: "14px 16px", border: `1px solid ${T.border}` }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: T.textMuted, marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.8px" }}>Electricity Cost</div>
-            <div className="input-group" style={{ marginBottom: 8 }}>
-              <label>True electricity cost (₱/kWh)</label>
-              <div className="input-addon">
-                <span className="input-prefix">₱</span>
-                <input type="number" min={0} step={0.01} value={trueElec} placeholder={`e.g. ${pricingConfig?.electricity_rate ?? 12}`} onChange={(e) => setTrueElec(e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
+              <div style={{ display: "flex", gap: 16, fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>
+                <span>Elec: <span style={{ color: T.text }}>₱{pp.elec.charged.toFixed(2)}</span></span>
+                <span>Printer: <span style={{ color: T.text }}>₱{pp.printer.charged.toFixed(2)}</span></span>
               </div>
             </div>
-            <div className="input-group" style={{ marginBottom: 0 }}>
-              <label>Selling electricity cost (₱/kWh)</label>
-              <div className="input-addon">
-                <span className="input-prefix">₱</span>
-                <input type="number" min={0} step={0.01} value={sellingElec} placeholder="e.g. 20" onChange={(e) => setSellingElec(e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
-
-        {/* What-if summary — only shown when any value differs from engine */}
-        {(() => {
-          const filChanged = trueFilKgNum !== null || sellingFilKgNum !== null;
-          const elecChanged = trueElecNum !== null || sellingElecNum !== null;
-          if (!filChanged && !elecChanged) return (
-            <div style={{ padding: "10px 14px", background: T.bgInput, borderRadius: 8, fontSize: 12, color: T.textDim, textAlign: "center" }}>
-              Adjust any rate above to see how it affects your real cost and profit.
-            </div>
-          );
-
-          const engRealTotal = costResult.totals.real;
-          const engSellingTotal = costResult.totals.charged;
-          const engProfit = costResult.totals.profit;
-          const engMargin = costResult.totals.margin;
-
-          const whatIfRealTotal = adjFilReal + adjElecReal + costResult.printer_usage.real;
-          const whatIfSellingTotal = adjFilSelling + adjElecSelling + costResult.printer_usage.charged;
-          const whatIfProfit = whatIfSellingTotal - whatIfRealTotal;
-          const whatIfMargin = whatIfSellingTotal > 0 ? (whatIfProfit / whatIfSellingTotal) * 100 : 0;
-
-          const rows = [
-            filChanged && { label: "Filament Real Cost", eng: costResult.filament.real, adj: adjFilReal },
-            filChanged && { label: "Filament Selling Price", eng: costResult.filament.charged, adj: adjFilSelling },
-            elecChanged && { label: "Electricity Real Cost", eng: costResult.electricity.real, adj: adjElecReal },
-            elecChanged && { label: "Electricity Selling Price", eng: costResult.electricity.charged, adj: adjElecSelling },
-          ].filter(Boolean);
-
-          return (
-            <div style={{ background: T.bgInput, borderRadius: 10, padding: "16px", border: `1px solid ${T.borderHi}` }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: T.textMuted, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>What-if Result</div>
-              {rows.map((row) => {
-                const diff = row.adj - row.eng;
-                const pct = row.eng > 0 ? (diff / row.eng) * 100 : 0;
-                return (
-                  <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${T.border}` }}>
-                    <span style={{ fontSize: 12, color: T.textMuted }}>{row.label}</span>
-                    <div style={{ display: "flex", gap: 12, alignItems: "center", fontFamily: T.fontMono, fontSize: 12 }}>
-                      <span style={{ color: T.textDim }}>₱{row.eng.toFixed(2)}</span>
-                      <span style={{ color: T.textDim }}>→</span>
-                      <span style={{ color: T.text, fontWeight: 600 }}>₱{row.adj.toFixed(2)}</span>
-                      <span style={{ fontSize: 11, color: diff > 0 ? T.danger : diff < 0 ? T.accent : T.textDim, minWidth: 56, textAlign: "right" }}>
-                        {diff === 0 ? "no change" : `${diff > 0 ? "+" : ""}${pct.toFixed(1)}%`}
-                      </span>
-                    </div>
-                  </div>
-                );
-              })}
-              {/* Summary totals */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
-                {[
-                  { label: "Real Cost", eng: engRealTotal, adj: whatIfRealTotal, color: T.info },
-                  { label: "Selling Price", eng: engSellingTotal, adj: whatIfSellingTotal, color: T.accent },
-                  { label: "Profit", eng: engProfit, adj: whatIfProfit, color: whatIfProfit >= 0 ? T.accent : T.danger },
-                  { label: "Margin", eng: engMargin, adj: whatIfMargin, isPercent: true, color: whatIfMargin >= 20 ? T.accent : T.warn },
-                ].map((s) => (
-                  <div key={s.label} style={{ background: T.bgCard, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
-                    <div style={{ fontSize: 11, color: T.textDim, marginBottom: 4 }}>{s.label}</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
-                      <span style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{s.isPercent ? `${s.eng.toFixed(1)}%` : `₱${s.eng.toFixed(2)}`}</span>
-                      <span style={{ fontSize: 10, color: T.textDim }}>→</span>
-                      <span style={{ fontSize: 15, fontWeight: 700, color: s.color, fontFamily: T.fontMono }}>{s.isPercent ? `${s.adj.toFixed(1)}%` : `₱${s.adj.toFixed(2)}`}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
-      </div>
+      )}
 
       {costResult.formula_error && (
-        <div className="validation-gate" style={{ marginBottom: 16 }}>Pricing formula warning: {costResult.formula_error}</div>
+        <div className="validation-gate" style={{ marginBottom: 16 }}>
+          Pricing formula warning: {costResult.formula_error}
+        </div>
       )}
 
       <div className="card">
@@ -1213,7 +1075,6 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
     </div>
   );
 }
-
 
 function Step6({ costResult, customPrice, setCustomPrice }) {
   if (!costResult) return null;
@@ -1289,7 +1150,7 @@ function Step8({ jobType, selectedPrinters, printerDB, selectedFil, grams, hours
     { label: "Job Type", val: jobType },
     { label: "Printers", val: selectedPrinters.map((p) => `${printerDB[p.id]?.name ?? p.id} (${p.pct}%)`).join(", ") },
     { label: "Filament", val: selectedFil ? `${selectedFil.brand} ${selectedFil.type} — ${selectedFil.color}` : "—" },
-    { label: "Parameters", val: `${grams}g · ${hours}h` },
+    { label: "Parameters", val: `${grams}g · ${hours.toFixed(2)}h` },
     { label: "Total Cost", val: finalPrice ? `₱${finalPrice.toFixed(2)}` : "—" },
     { label: "Client", val: clientName },
     { label: "Deadline", val: deadline || "None" },
@@ -1353,7 +1214,7 @@ function ReceiptView({ job, onNew }) {
 function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   const [showAddFil, setShowAddFil] = useState(false);
   const [editFil, setEditFil] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null); // filament object to delete
+  const [confirmDelete, setConfirmDelete] = useState(null);
   const [dbFilamentTypes, setDbFilamentTypes] = useState([]);
   const [dbFinishTypes, setDbFinishTypes] = useState([]);
   const [form, setForm] = useState({ brand: "", type: "", color: "", finish: "", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
@@ -1415,7 +1276,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
     }
   };
 
-  // FIX: proper delete with confirm dialog — tries hard delete, shows real error if it fails
   const confirmAndDelete = (f) => { setConfirmDelete(f); setOpError(""); };
 
   const executeDelete = async () => {
@@ -1427,8 +1287,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
     try {
       const { error } = await supabase.from("filaments").delete().eq("id", id);
       if (error) {
-        // FK constraint or other DB error — show a clear message
-        setOpError(`Cannot delete "${name}": ${error.message}. Try removing associated job records first, or contact your database admin.`);
+        setOpError(`Cannot delete "${name}": ${error.message}. Try removing associated job records first.`);
       } else {
         setFilaments((prev) => prev.filter((f) => f.id !== id));
       }
@@ -1457,7 +1316,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
 
       <div className="card">
         {filaments.length === 0 ? (
-          <div className="empty-state">No filaments in database yet. Add your first filament to get started.</div>
+          <div className="empty-state">No filaments in database yet.</div>
         ) : (
           <table className="table">
             <thead>
@@ -1510,7 +1369,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         )}
       </div>
 
-      {/* Confirm delete modal */}
       {confirmDelete && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
           <div className="confirm-modal">
@@ -1518,7 +1376,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
             <p>
               Are you sure you want to delete <strong style={{ color: T.text }}>{confirmDelete.brand} {confirmDelete.color}</strong>?
               <br /><br />
-              If this filament is referenced by existing jobs, the deletion will fail and you'll see an error message.
+              If this filament is referenced by existing jobs, the deletion will fail.
             </p>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmDelete(null)}>Cancel</button>
@@ -1528,7 +1386,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         </div>
       )}
 
-      {/* Add/Edit modal */}
       {showAddFil && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowAddFil(false)}>
           <div className="modal">
@@ -1560,17 +1417,17 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
               </div>
             </div>
             <div className="input-group">
-              <label>Reference Price per kg (₱) <span style={{ color: T.textDim, fontSize: 10 }}>— used as fallback if true cost not set</span></label>
+              <label>Reference Price per kg (₱) <span style={{ color: T.textDim, fontSize: 10 }}>— fallback if true cost not set</span></label>
               <input type="number" value={form.price_per_kg} min={1} onChange={(e) => setForm((f) => ({ ...f, price_per_kg: +e.target.value }))} />
             </div>
             <div className="input-row">
               <div className="input-group">
-                <label>True Cost per kg (₱) <span style={{ color: T.info, fontSize: 10 }}>— what you actually pay</span></label>
+                <label>True Cost per kg (₱) <span style={{ color: T.info, fontSize: 10 }}>— what you pay</span></label>
                 <div className="input-addon">
                   <span className="input-prefix">₱</span>
                   <input type="number" min={0} step={0.01} placeholder="e.g. 800" value={form.true_cost_per_kg} onChange={(e) => setForm((f) => ({ ...f, true_cost_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
                 </div>
-                {form.true_cost_per_kg !== "" && <div style={{ fontSize: 11, color: T.info, marginTop: 3 }}>₱/g: {(Number(form.true_cost_per_kg)/1000).toFixed(4)}</div>}
+                {form.true_cost_per_kg !== "" && <div style={{ fontSize: 11, color: T.info, marginTop: 3 }}>₱/g: {(Number(form.true_cost_per_kg) / 1000).toFixed(4)}</div>}
               </div>
               <div className="input-group">
                 <label>Selling Price per kg (₱) <span style={{ color: T.accent, fontSize: 10 }}>— charged to client</span></label>
@@ -1578,10 +1435,10 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
                   <span className="input-prefix">₱</span>
                   <input type="number" min={0} step={0.01} placeholder="e.g. 1400" value={form.selling_price_per_kg} onChange={(e) => setForm((f) => ({ ...f, selling_price_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
                 </div>
-                {form.selling_price_per_kg !== "" && <div style={{ fontSize: 11, color: T.accent, marginTop: 3 }}>₱/g: {(Number(form.selling_price_per_kg)/1000).toFixed(4)}</div>}
+                {form.selling_price_per_kg !== "" && <div style={{ fontSize: 11, color: T.accent, marginTop: 3 }}>₱/g: {(Number(form.selling_price_per_kg) / 1000).toFixed(4)}</div>}
               </div>
             </div>
-            {form.true_cost_per_kg !== "" && form.selling_price_per_kg !== "" && (
+            {form.true_cost_per_kg !== "" && form.selling_price_per_kg !== "" && Number(form.true_cost_per_kg) > 0 && (
               <div style={{ padding: "8px 12px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 8, fontSize: 12, marginBottom: 8 }}>
                 Margin: <strong style={{ color: T.accent }}>{(((Number(form.selling_price_per_kg) - Number(form.true_cost_per_kg)) / Number(form.selling_price_per_kg)) * 100).toFixed(1)}%</strong>
                 &nbsp;· Markup: <strong style={{ color: T.accent }}>×{(Number(form.selling_price_per_kg) / Number(form.true_cost_per_kg)).toFixed(2)}</strong>
@@ -1599,8 +1456,8 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   );
 }
 
-// ─── PARAMETERS VIEW — redesigned to match app card style ────────────────────
-function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters, grams, hours, selectedFil, selectedPrinters }) {
+// ─── PARAMETERS VIEW ──────────────────────────────────────────────────────────
+function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters }) {
   const [filEdits, setFilEdits] = useState({});
   const [printerEdits, setPrinterEdits] = useState({});
   const [pricingDraft, setPricingDraft] = useState({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" });
@@ -1608,7 +1465,6 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
   const [msgs, setMsgs] = useState({ fil: "", printers: "", pricing: "" });
 
   const setMsg = (key, v) => setMsgs((s) => ({ ...s, [key]: v }));
-
   const onFilChange = (id, v) => setFilEdits((s) => ({ ...s, [id]: v }));
   const onPrinterChange = (id, key, v) => setPrinterEdits((s) => ({ ...s, [id]: { ...(s[id] || {}), [key]: v } }));
   const onPricingChange = (k, v) => setPricingDraft((s) => ({ ...s, [k]: v }));
@@ -1688,47 +1544,40 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
     );
   };
 
-  const fieldInput = (val, placeholder, onChange) => (
-    <input type="number" step="any" className="params-field-input" value={val} placeholder={placeholder} onChange={(e) => onChange(e.target.value === "" ? "" : e.target.value)} style={{ width: 130 }} />
-  );
-
   return (
     <div>
       <div className="page-header">
         <div className="page-title">Parameters</div>
-        <div className="page-sub">Edit filament prices, printer rates, and pricing settings used by the cost engine.</div>
+        <div className="page-sub">Edit filament prices, printer rates, and pricing settings.</div>
       </div>
 
-      {/* ── Filaments ── */}
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Filament Prices</div>
         {filaments.length === 0 ? (
           <div className="empty-state">No filaments found.</div>
         ) : (
-          <div>
-            {filaments.map((f) => (
-              <div key={f.id} className="params-field-row">
-                <div className="params-field-info">
-                  <div className="params-field-name">
-                    <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} />
-                    {f.color}
-                    <span className="badge badge-info">{f.type}</span>
-                    <span className="tag">{f.finish}</span>
-                  </div>
-                  <div className="params-field-sub">
-                    {f.brand}
-                    {" · "}<span style={{ color: T.textDim }}>ref: ₱{f.price_per_kg}/kg</span>
-                    {f.true_cost_per_kg != null && <>{" · "}<span style={{ color: T.info }}>true: ₱{f.true_cost_per_kg}/kg (₱{(f.true_cost_per_kg/1000).toFixed(4)}/g)</span></>}
-                    {f.selling_price_per_kg != null && <>{" · "}<span style={{ color: T.accent }}>sell: ₱{f.selling_price_per_kg}/kg (₱{(f.selling_price_per_kg/1000).toFixed(4)}/g)</span></>}
-                  </div>
+          filaments.map((f) => (
+            <div key={f.id} className="params-field-row">
+              <div className="params-field-info">
+                <div className="params-field-name">
+                  <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} />
+                  {f.color}
+                  <span className="badge badge-info">{f.type}</span>
+                  <span className="tag">{f.finish}</span>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <label style={{ margin: 0, fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}>₱/kg</label>
-                  {fieldInput(filEdits[String(f.id)] ?? "", String(f.price_per_kg), (v) => onFilChange(String(f.id), v))}
+                <div className="params-field-sub">
+                  {f.brand}
+                  {" · "}<span style={{ color: T.textDim }}>ref: ₱{f.price_per_kg}/kg</span>
+                  {f.true_cost_per_kg != null && <>{" · "}<span style={{ color: T.info }}>true: ₱{f.true_cost_per_kg}/kg</span></>}
+                  {f.selling_price_per_kg != null && <>{" · "}<span style={{ color: T.accent }}>sell: ₱{f.selling_price_per_kg}/kg</span></>}
                 </div>
               </div>
-            ))}
-          </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{ margin: 0, fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}>₱/kg</label>
+                <input type="number" step="any" style={{ width: 130 }} placeholder={String(f.price_per_kg)} value={filEdits[String(f.id)] ?? ""} onChange={(e) => onFilChange(String(f.id), e.target.value === "" ? "" : e.target.value)} />
+              </div>
+            </div>
+          ))
         )}
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
           <button className="btn btn-ghost" onClick={() => { setFilEdits({}); setMsg("fil", ""); }}>Reset</button>
@@ -1737,14 +1586,12 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
         <MsgBanner msg={msgs.fil} />
       </div>
 
-      {/* ── Printers ── */}
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Printer Rates</div>
         {printerRows.length === 0 ? (
           <div className="empty-state">No active printers found.</div>
         ) : (
           <div>
-            {/* Column headers */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 110px 110px", gap: 8, paddingBottom: 8, borderBottom: `1px solid ${T.border}`, marginBottom: 4 }}>
               <div style={{ fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.6px" }}>Printer</div>
               {["Base Rate", "Efficiency", "Labor", "Multiplier"].map((h) => (
@@ -1775,59 +1622,26 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
         <MsgBanner msg={msgs.printers} />
       </div>
 
-      {/* ── Pricing Settings ── */}
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Pricing Settings</div>
-        <div className="params-field-row">
-          <div className="params-field-info">
-            <div className="params-field-name">Electricity Rate</div>
-            <div className="params-field-sub">Current: ₱{pricingConfig?.electricity_rate ?? "—"}/kWh (engine rate)</div>
+        {[
+          { label: "Electricity Rate", sub: `Current: ₱${pricingConfig?.electricity_rate ?? "—"}/kWh`, key: "electricity_rate", unit: "₱/kWh", placeholder: String(pricingConfig?.electricity_rate ?? 0) },
+          { label: "True Electricity Cost", sub: "Actual cost you pay per kWh", key: "true_electricity_cost", unit: "₱/kWh", placeholder: "e.g. 10.50" },
+          { label: "Selling Electricity Cost", sub: "Rate charged to client per kWh", key: "selling_electricity_cost", unit: "₱/kWh", placeholder: "e.g. 18.00" },
+          { label: "Markup Multiplier", sub: `Current: ×${pricingConfig?.markup_multiplier ?? "—"}`, key: "markup_multiplier", unit: "×", placeholder: String(pricingConfig?.markup_multiplier ?? 1) },
+          { label: "Minimum Price", sub: `Current: ₱${pricingConfig?.minimum_price ?? "—"}`, key: "minimum_price", unit: "₱", placeholder: String(pricingConfig?.minimum_price ?? 0) },
+        ].map((field) => (
+          <div key={field.key} className="params-field-row">
+            <div className="params-field-info">
+              <div className="params-field-name">{field.label}</div>
+              <div className="params-field-sub">{field.sub}</div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>{field.unit}</label>
+              <input type="number" step="0.01" style={{ width: 130 }} placeholder={field.placeholder} value={pricingDraft[field.key]} onChange={(e) => onPricingChange(field.key, e.target.value === "" ? "" : e.target.value)} />
+            </div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kWh</label>
-            <input type="number" step="0.01" style={{ width: 130 }} placeholder={String(pricingConfig?.electricity_rate ?? 0)} value={pricingDraft.electricity_rate} onChange={(e) => onPricingChange("electricity_rate", e.target.value === "" ? "" : e.target.value)} />
-          </div>
-        </div>
-        <div className="params-field-row">
-          <div className="params-field-info">
-            <div className="params-field-name">True Electricity Cost</div>
-            <div className="params-field-sub">Actual cost you pay per kWh</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kWh</label>
-            <input type="number" step="0.01" style={{ width: 130 }} placeholder="e.g. 10.50" value={pricingDraft.true_electricity_cost} onChange={(e) => onPricingChange("true_electricity_cost", e.target.value === "" ? "" : e.target.value)} />
-          </div>
-        </div>
-        <div className="params-field-row">
-          <div className="params-field-info">
-            <div className="params-field-name">Selling Electricity Cost</div>
-            <div className="params-field-sub">Rate charged to client per kWh</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kWh</label>
-            <input type="number" step="0.01" style={{ width: 130 }} placeholder="e.g. 18.00" value={pricingDraft.selling_electricity_cost} onChange={(e) => onPricingChange("selling_electricity_cost", e.target.value === "" ? "" : e.target.value)} />
-          </div>
-        </div>
-        <div className="params-field-row">
-          <div className="params-field-info">
-            <div className="params-field-name">Markup Multiplier</div>
-            <div className="params-field-sub">Current: ×{pricingConfig?.markup_multiplier ?? "—"}</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>×</label>
-            <input type="number" step="0.05" style={{ width: 130 }} placeholder={String(pricingConfig?.markup_multiplier ?? 1)} value={pricingDraft.markup_multiplier} onChange={(e) => onPricingChange("markup_multiplier", e.target.value === "" ? "" : e.target.value)} />
-          </div>
-        </div>
-        <div className="params-field-row">
-          <div className="params-field-info">
-            <div className="params-field-name">Minimum Price</div>
-            <div className="params-field-sub">Current: ₱{pricingConfig?.minimum_price ?? "—"}</div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱</label>
-            <input type="number" step="1" style={{ width: 130 }} placeholder={String(pricingConfig?.minimum_price ?? 0)} value={pricingDraft.minimum_price} onChange={(e) => onPricingChange("minimum_price", e.target.value === "" ? "" : e.target.value)} />
-          </div>
-        </div>
+        ))}
         <div className="params-field-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
           <div className="params-field-info">
             <div className="params-field-name">Pricing Formula</div>
@@ -1845,6 +1659,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
   );
 }
 
+// ─── PRICING SETTINGS VIEW ────────────────────────────────────────────────────
 function PricingSettingsView({ pricingConfig, setPricingConfig }) {
   const [draft, setDraft] = useState(pricingConfig);
   const [testError, setTestError] = useState("");
@@ -1858,12 +1673,29 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
 
   const testFormula = () => {
     try {
-      const result = _evaluatePricingFormula(draft.formula, {
-        grams: 100, hours: 4, filament_real: 65, filament_charged: 120,
-        electricity_real: 16.8, electricity_charged: 25, printer_real: 80, printer_charged: 150,
+      // FIX: include all variables including aliases so test doesn't throw on any valid formula
+      const testVars = {
+        grams: 100, hours: 4,
+        filament_real: 65, filament_charged: 120,
+        electricity_real: 16.8, electricity_charged: 25,
+        printer_real: 80, printer_charged: 150,
         real_total: 161.8, default_charged_total: 295,
-        markup_multiplier: Number(draft.markup_multiplier || 1), minimum_price: Number(draft.minimum_price || 0),
-      });
+        markup_multiplier: Number(draft.markup_multiplier || 1),
+        minimum_price: Number(draft.minimum_price || 0),
+        filament_price_per_gram: 65 / 100,
+        filament_selling_per_gram: 120 / 100,
+        true_cost_per_kg: 650,
+        selling_price_per_kg: 1200,
+        elec_kwh: 0.56,
+        machine_rate: 80,
+        machine_charged: 150,
+        filament_cost: 65,
+        filament_price: 120,
+        electricity_cost: 16.8,
+        electricity_price: 25,
+        total_cost: 161.8,
+      };
+      const result = _evaluatePricingFormula(draft.formula, testVars);
       setTestError(""); setTestPrice(Math.max(result, Number(draft.minimum_price || 0)));
     } catch (err) { setTestPrice(null); setTestError(err.message || "Formula error"); }
   };
@@ -1871,8 +1703,11 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
   const save = async () => {
     setSaving(true); setSaveMsg("");
     const payload = {
-      electricity_rate: Number(draft.electricity_rate || 0), minimum_price: Number(draft.minimum_price || 0),
-      markup_multiplier: Number(draft.markup_multiplier || 1), formula: draft.formula, updated_at: new Date().toISOString(),
+      electricity_rate: Number(draft.electricity_rate || 0),
+      minimum_price: Number(draft.minimum_price || 0),
+      markup_multiplier: Number(draft.markup_multiplier || 1),
+      formula: draft.formula,
+      updated_at: new Date().toISOString(),
     };
     const { error } = await supabase.from("pricing_settings").update(payload).eq("id", "default");
     if (error) { setSaveMsg(`Error: ${error.message}`); } else { setPricingConfig({ ...payload }); setSaveMsg("Saved successfully."); testFormula(); }
@@ -1916,7 +1751,20 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
         <div className="card">
           <div className="card-title"><span className="card-title-dot" />Allowed Variables</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["grams","hours","filament_real","filament_charged","electricity_real","electricity_charged","printer_real","printer_charged","real_total","default_charged_total","markup_multiplier","minimum_price","machine_rate","machine_charged","filament_cost","filament_price","electricity_cost","electricity_price","total_cost","filament_price_per_gram","filament_selling_per_gram","elec_kwh"].map((v) => (
+            {[
+              "grams", "hours",
+              "filament_real", "filament_charged",
+              "electricity_real", "electricity_charged",
+              "printer_real", "printer_charged",
+              "real_total", "default_charged_total",
+              "markup_multiplier", "minimum_price",
+              "machine_rate", "machine_charged",
+              "filament_cost", "filament_price",
+              "electricity_cost", "electricity_price",
+              "total_cost",
+              "filament_price_per_gram", "filament_selling_per_gram",
+              "elec_kwh",
+            ].map((v) => (
               <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>
             ))}
           </div>
@@ -1924,6 +1772,7 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
             <div className="card-title"><span className="card-title-dot" />Examples</div>
             <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Simple markup</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>default_charged_total * markup_multiplier</div></div>
             <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Cost-plus target</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>real_total * 2.2</div></div>
+            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Machine-rate based</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>machine_rate + filament_price + electricity_price</div></div>
             <div className="rec-card"><div className="rec-title">Weight and time based</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>(grams * 2.5) + (hours * 35)</div></div>
           </div>
         </div>
@@ -1935,11 +1784,11 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
 // ─── JOB ORDERS VIEW ──────────────────────────────────────────────────────────
 const ORDER_STATUSES = ["Queued", "Printing", "Post-Processing", "Done", "Cancelled"];
 const STATUS_COLORS = {
-  Queued:           { bg: "rgba(91,156,246,0.12)",  border: "rgba(91,156,246,0.3)",  text: "#5B9CF6" },
-  Printing:         { bg: "rgba(245,166,35,0.12)",  border: "rgba(245,166,35,0.3)",  text: "#F5A623" },
-  "Post-Processing":{ bg: "rgba(155,125,255,0.12)", border: "rgba(155,125,255,0.3)", text: "#9B7DFF" },
-  Done:             { bg: "rgba(0,229,160,0.12)",   border: "rgba(0,229,160,0.3)",   text: "#00E5A0" },
-  Cancelled:        { bg: "rgba(255,92,92,0.12)",   border: "rgba(255,92,92,0.3)",   text: "#FF5C5C" },
+  Queued:            { bg: "rgba(91,156,246,0.12)",  border: "rgba(91,156,246,0.3)",  text: "#5B9CF6" },
+  Printing:          { bg: "rgba(245,166,35,0.12)",  border: "rgba(245,166,35,0.3)",  text: "#F5A623" },
+  "Post-Processing": { bg: "rgba(155,125,255,0.12)", border: "rgba(155,125,255,0.3)", text: "#9B7DFF" },
+  Done:              { bg: "rgba(0,229,160,0.12)",   border: "rgba(0,229,160,0.3)",   text: "#00E5A0" },
+  Cancelled:         { bg: "rgba(255,92,92,0.12)",   border: "rgba(255,92,92,0.3)",   text: "#FF5C5C" },
 };
 
 function StatusBadge({ status }) {
@@ -1953,16 +1802,16 @@ function StatusBadge({ status }) {
 
 function DeadlineBadge({ deadline }) {
   if (!deadline) return <span style={{ color: T.textDim, fontSize: 12 }}>—</span>;
-  const today = new Date(); today.setHours(0,0,0,0);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
   const d = new Date(deadline + "T00:00:00");
   const diff = Math.round((d - today) / 86400000);
-  const label = deadline;
-  if (diff < 0) return <span style={{ fontSize: 12, color: T.danger, fontWeight: 600 }}>⚠ {label} (overdue)</span>;
+  if (diff < 0) return <span style={{ fontSize: 12, color: T.danger, fontWeight: 600 }}>⚠ {deadline} (overdue)</span>;
   if (diff === 0) return <span style={{ fontSize: 12, color: T.warn, fontWeight: 600 }}>⚡ Today</span>;
-  if (diff <= 2) return <span style={{ fontSize: 12, color: T.warn }}>{label} ({diff}d)</span>;
-  return <span style={{ fontSize: 12, color: T.textMuted }}>{label} ({diff}d)</span>;
+  if (diff <= 2) return <span style={{ fontSize: 12, color: T.warn }}>{deadline} ({diff}d)</span>;
+  return <span style={{ fontSize: 12, color: T.textMuted }}>{deadline} ({diff}d)</span>;
 }
 
+// FIX: onAddNew now just redirects to New Job wizard — no separate form modal
 function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder, onAddNew }) {
   const [editOrder, setEditOrder] = useState(null);
   const [filterStatus, setFilterStatus] = useState("All");
@@ -2033,7 +1882,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         return new Date(a.deadline) - new Date(b.deadline);
       }
       if (sortBy === "priority") {
-        const pi = (p) => ["Urgent","High","Normal","Low"].indexOf(p ?? "Normal");
+        const pi = (p) => ["Urgent", "High", "Normal", "Low"].indexOf(p ?? "Normal");
         return pi(a.priority) - pi(b.priority);
       }
       if (sortBy === "status") return (a.status || "").localeCompare(b.status || "");
@@ -2049,18 +1898,19 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
           <div className="page-title">Job Orders</div>
           <div className="page-sub">{jobOrders.length} total · {counts.Queued || 0} queued · {counts.Printing || 0} printing</div>
         </div>
+        {/* FIX: clicking this goes directly to New Job wizard, no separate modal */}
         <button className="btn btn-primary" onClick={onAddNew}>+ New Job Order</button>
       </div>
 
       <div style={{ marginBottom: 16, padding: "10px 16px", background: T.bgInput, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 12, color: T.textMuted }}>
-        💡 <strong style={{ color: T.text }}>How it works:</strong> Click <strong style={{ color: T.accent }}>+ New Job Order</strong> to queue a job via the New Job wizard. Once queued, click <strong style={{ color: T.accent }}>▶ Start Job</strong> on any order to load it into the New Job form for pricing and finalizing.
+        💡 <strong style={{ color: T.text }}>How it works:</strong> Click <strong style={{ color: T.accent }}>+ New Job Order</strong> to open the New Job wizard — fill in client details, filament and parameters, then save as an order at the end. Click <strong style={{ color: T.accent }}>▶ Start Job</strong> on any queued order to load it for pricing and finalizing.
       </div>
 
       {opError && (
         <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>
       )}
 
-      {/* Status summary pills */}
+      {/* Status filter pills */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
         {["All", ...ORDER_STATUSES].map((s) => {
           const c = s === "All" ? null : STATUS_COLORS[s];
@@ -2072,13 +1922,13 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
               color: active ? (c?.text ?? T.accent) : T.textMuted,
               fontSize: 12, fontWeight: active ? 600 : 400, cursor: "pointer",
             }}>
-              {s} {s !== "All" && counts[s] !== undefined ? `(${counts[s]})` : s === "All" ? `(${jobOrders.length})` : ""}
+              {s}{s !== "All" && counts[s] !== undefined ? ` (${counts[s]})` : s === "All" ? ` (${jobOrders.length})` : ""}
             </button>
           );
         })}
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: T.textDim }}>Sort:</span>
-          {["deadline","priority","status","created"].map((s) => (
+          {["deadline", "priority", "status", "created"].map((s) => (
             <button key={s} onClick={() => setSortBy(s)} style={{
               padding: "4px 10px", borderRadius: 6, border: `1px solid ${sortBy === s ? T.accent : T.border}`,
               background: sortBy === s ? T.accentGlow : "transparent",
@@ -2092,7 +1942,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>{filterStatus === "All" ? "No job orders yet" : `No orders with status "${filterStatus}"`}</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Click "+ New Job Order" to queue a print job through the New Job wizard</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Click "+ New Job Order" to start a job through the New Job wizard</div>
           <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={onAddNew}>+ New Job Order</button>
         </div>
       ) : (
@@ -2164,12 +2014,11 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         </div>
       )}
 
-      {/* Edit-only modal — no Add modal, Add goes to New Job wizard */}
+      {/* Edit modal — only for editing existing orders, not creating new */}
       {editOrder && form && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && (setEditOrder(null), setForm(null))}>
           <div className="modal" style={{ width: 540, maxHeight: "90vh", overflowY: "auto" }}>
             <h3>Edit Job Order</h3>
-
             <div className="input-row">
               <div className="input-group">
                 <label>Client Name *</label>
@@ -2180,17 +2029,14 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                 <input type="date" value={form.deadline} onChange={(e) => setForm((f) => ({ ...f, deadline: e.target.value }))} />
               </div>
             </div>
-
             <div className="input-group">
               <label>Job Title *</label>
               <input type="text" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
             </div>
-
             <div className="input-group">
               <label>Description / Notes</label>
               <textarea rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} />
             </div>
-
             <div className="input-row">
               <div className="input-group">
                 <label>Status</label>
@@ -2205,7 +2051,6 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                 </select>
               </div>
             </div>
-
             <div className="input-row">
               <div className="input-group">
                 <label>Filament (optional)</label>
@@ -2222,7 +2067,6 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                 </select>
               </div>
             </div>
-
             <div className="input-row">
               <div className="input-group">
                 <label>Est. Weight (g)</label>
@@ -2239,7 +2083,6 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                 </div>
               </div>
             </div>
-
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>{opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setEditOrder(null); setForm(null); }} disabled={opLoading}>Cancel</button>
@@ -2283,7 +2126,7 @@ function JobsView({ jobs }) {
                 <td>{j.date}</td>
                 <td style={{ fontWeight: 500, color: T.text }}>{j.clientName}</td>
                 <td><span className="tag">{j.jobType}</span></td>
-                <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.grams}g · {j.hours}h</td>
+                <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.grams}g · {j.hours.toFixed(2)}h</td>
                 <td style={{ fontFamily: T.fontMono, color: T.text }}>₱{j.finalPrice.toFixed(2)}</td>
                 <td style={{ fontFamily: T.fontMono, color: T.accent }}>+₱{(j.cost?.totals.profit ?? 0).toFixed(2)}</td>
               </tr>
@@ -2315,7 +2158,7 @@ function AnalyticsView({ jobs }) {
   const filamentProfit = jobs.reduce((s, j) => s + (j.cost?.filament.profit ?? 0), 0);
   const elecProfit = jobs.reduce((s, j) => s + (j.cost?.electricity.profit ?? 0), 0);
   const printerProfit = jobs.reduce((s, j) => s + (j.cost?.printer_usage.profit ?? 0), 0);
-  const maxProfit2 = Math.max(filamentProfit, elecProfit, printerProfit);
+  const maxProfit2 = Math.max(filamentProfit, elecProfit, printerProfit, 0.01);
   return (
     <div>
       <div className="page-header"><div className="page-title">Analytics</div><div className="page-sub">Profit engine summary</div></div>
@@ -2331,7 +2174,7 @@ function AnalyticsView({ jobs }) {
           {[["Filament", filamentProfit], ["Electricity", elecProfit], ["Printer Usage", printerProfit]].map(([label, val]) => (
             <div key={label} className="profit-bar-wrap">
               <span className="profit-bar-label">{label}</span>
-              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${maxProfit2 > 0 ? (val / maxProfit2) * 100 : 0}%`, background: T.accent }} /></div>
+              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(val / maxProfit2) * 100}%`, background: T.accent }} /></div>
               <span className="profit-bar-val">₱{val.toFixed(2)}</span>
             </div>
           ))}
