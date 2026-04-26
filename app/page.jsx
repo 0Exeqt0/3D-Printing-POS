@@ -133,6 +133,14 @@ function _computeEngine(job, PRINTER_DB) {
         const p = PRINTER_DB[alloc.id]; if (!p) return acc;
         return acc + (p.wattage / 1000) * (hours * alloc.pct / 100);
       }, 0).toFixed(4)),
+      // Common user-defined aliases
+      machine_rate: printerReal,
+      machine_charged: printerCharged,
+      filament_cost: filamentReal,
+      filament_price: filamentCharged,
+      electricity_cost: elecReal,
+      electricity_price: elecCharged,
+      total_cost: totalReal,
     };
     const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, formulaVariables);
     if (formulaPrice !== null) computedChargedTotal = formulaPrice;
@@ -617,7 +625,40 @@ export default function App() {
     setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
   };
 
-  const filteredFils = filaments.filter(
+  const [savingOrder, setSavingOrder] = useState(false);
+  const [saveOrderError, setSaveOrderError] = useState("");
+
+  const saveAsOrder = async () => {
+    if (!clientName.trim()) { setSaveOrderError("Client name is required to save an order."); return; }
+    setSavingOrder(true); setSaveOrderError("");
+    const payload = {
+      client_name: clientName.trim(),
+      title: parts || `Job for ${clientName.trim()}`,
+      description: notes || "",
+      filament_id: selectedFil?.id || null,
+      printer_id: selectedPrinters[0]?.id || null,
+      deadline: deadline || null,
+      status: "Queued",
+      priority: "Normal",
+      estimated_grams: Number(grams) > 0 ? Number(grams) : null,
+      estimated_hours: Number(hours) > 0 ? Number(hours) : null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    try {
+      const { error } = await supabase.from("job_orders").insert(payload);
+      if (error) throw new Error(error.message);
+      // Reload orders
+      const { data } = await supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false });
+      if (data) setJobOrders(data);
+      resetJob();
+      setView("orders");
+    } catch (err) {
+      setSaveOrderError(err.message || "Failed to save order.");
+    } finally {
+      setSavingOrder(false);
+    }
+  };
     (f) => f.active && (filSearch === "" || `${f.brand} ${f.type} ${f.color}`.toLowerCase().includes(filSearch.toLowerCase()))
   );
 
@@ -694,7 +735,7 @@ export default function App() {
               grams={grams} hours={hours} selectedFil={selectedFil} selectedPrinters={selectedPrinters}
             />
           )}
-          {view === "orders" && <JobOrdersView jobOrders={jobOrders} setJobOrders={setJobOrders} filaments={filaments} printerRows={printerRows} startJobFromOrder={startJobFromOrder} />}
+          {view === "orders" && <JobOrdersView jobOrders={jobOrders} setJobOrders={setJobOrders} filaments={filaments} printerRows={printerRows} startJobFromOrder={startJobFromOrder} onAddNew={() => { resetJob(); setView("pos"); }} />}
           {view === "jobs" && <JobsView jobs={completedJobs} />}
           {view === "analytics" && <AnalyticsView jobs={completedJobs} />}
           {view === "settings" && <PricingSettingsView pricingConfig={pricingConfig} setPricingConfig={setPricingConfig} />}
@@ -975,18 +1016,11 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
 
   const maxCharged = Math.max(...items.map((i) => i.charged));
 
-  // Adjusted cost calculations
+  // Adjusted cost calculations (used in what-if section)
   const adjFilReal = trueFilKgNum !== null ? (costResult._grams ?? 0) / 1000 * trueFilKgNum : costResult.filament.real;
   const adjFilSelling = sellingFilKgNum !== null ? (costResult._grams ?? 0) / 1000 * sellingFilKgNum : costResult.filament.charged;
   const adjElecReal = trueElecNum !== null ? costResult._elecKwh * trueElecNum : costResult.electricity.real;
   const adjElecSelling = sellingElecNum !== null ? costResult._elecKwh * sellingElecNum : costResult.electricity.charged;
-
-  const hasAdj = trueFilKg !== "" || sellingFilKg !== "" || trueElec !== "" || sellingElec !== "";
-
-  const adjTotalReal = adjFilReal + adjElecReal + costResult.printer_usage.real;
-  const adjTotalSelling = adjFilSelling + adjElecSelling + costResult.printer_usage.charged;
-  const adjProfit = adjTotalSelling - adjTotalReal;
-  const adjMargin = adjTotalSelling > 0 ? (adjProfit / adjTotalSelling) * 100 : 0;
 
   return (
     <div>
@@ -1094,55 +1128,74 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
           </div>
         </div>
 
-        {/* Comparison table */}
-        {hasAdj && (
-          <div style={{ background: T.bgInput, borderRadius: 10, padding: "16px", border: `1px solid ${T.borderHi}` }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: T.textMuted, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>Comparison Result</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 12 }}>
-              <div style={{ fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.6px" }}>Component</div>
-              <div style={{ fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.6px", textAlign: "right" }}>Engine</div>
-              <div style={{ fontSize: 11, color: T.info, textTransform: "uppercase", letterSpacing: "0.6px", textAlign: "right" }}>Adjusted</div>
+        {/* What-if summary — only shown when any value differs from engine */}
+        {(() => {
+          const filChanged = trueFilKgNum !== null || sellingFilKgNum !== null;
+          const elecChanged = trueElecNum !== null || sellingElecNum !== null;
+          if (!filChanged && !elecChanged) return (
+            <div style={{ padding: "10px 14px", background: T.bgInput, borderRadius: 8, fontSize: 12, color: T.textDim, textAlign: "center" }}>
+              Adjust any rate above to see how it affects your real cost and profit.
             </div>
-            {[
-              { label: "Filament Real", eng: costResult.filament.real, adj: adjFilReal },
-              { label: "Filament Selling", eng: costResult.filament.charged, adj: adjFilSelling },
-              { label: "Electricity Real", eng: costResult.electricity.real, adj: adjElecReal },
-              { label: "Electricity Selling", eng: costResult.electricity.charged, adj: adjElecSelling },
-              { label: "Printer Usage", eng: costResult.printer_usage.real, adj: costResult.printer_usage.real },
-            ].map((row) => {
-              const diff = row.adj - row.eng;
-              return (
-                <div key={row.label} style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, padding: "6px 0", borderTop: `1px solid ${T.border}` }}>
-                  <div style={{ fontSize: 12, color: T.textMuted }}>{row.label}</div>
-                  <div style={{ fontSize: 12, fontFamily: T.fontMono, color: T.textDim, textAlign: "right" }}>₱{row.eng.toFixed(2)}</div>
-                  <div style={{ fontSize: 12, fontFamily: T.fontMono, textAlign: "right", color: diff > 0 ? T.warn : diff < 0 ? T.accent : T.textDim }}>
-                    ₱{row.adj.toFixed(2)} {diff !== 0 && <span style={{ fontSize: 10 }}>({diff > 0 ? "+" : ""}{diff.toFixed(2)})</span>}
+          );
+
+          const engRealTotal = costResult.totals.real;
+          const engSellingTotal = costResult.totals.charged;
+          const engProfit = costResult.totals.profit;
+          const engMargin = costResult.totals.margin;
+
+          const whatIfRealTotal = adjFilReal + adjElecReal + costResult.printer_usage.real;
+          const whatIfSellingTotal = adjFilSelling + adjElecSelling + costResult.printer_usage.charged;
+          const whatIfProfit = whatIfSellingTotal - whatIfRealTotal;
+          const whatIfMargin = whatIfSellingTotal > 0 ? (whatIfProfit / whatIfSellingTotal) * 100 : 0;
+
+          const rows = [
+            filChanged && { label: "Filament Real Cost", eng: costResult.filament.real, adj: adjFilReal },
+            filChanged && { label: "Filament Selling Price", eng: costResult.filament.charged, adj: adjFilSelling },
+            elecChanged && { label: "Electricity Real Cost", eng: costResult.electricity.real, adj: adjElecReal },
+            elecChanged && { label: "Electricity Selling Price", eng: costResult.electricity.charged, adj: adjElecSelling },
+          ].filter(Boolean);
+
+          return (
+            <div style={{ background: T.bgInput, borderRadius: 10, padding: "16px", border: `1px solid ${T.borderHi}` }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.textMuted, marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>What-if Result</div>
+              {rows.map((row) => {
+                const diff = row.adj - row.eng;
+                const pct = row.eng > 0 ? (diff / row.eng) * 100 : 0;
+                return (
+                  <div key={row.label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${T.border}` }}>
+                    <span style={{ fontSize: 12, color: T.textMuted }}>{row.label}</span>
+                    <div style={{ display: "flex", gap: 12, alignItems: "center", fontFamily: T.fontMono, fontSize: 12 }}>
+                      <span style={{ color: T.textDim }}>₱{row.eng.toFixed(2)}</span>
+                      <span style={{ color: T.textDim }}>→</span>
+                      <span style={{ color: T.text, fontWeight: 600 }}>₱{row.adj.toFixed(2)}</span>
+                      <span style={{ fontSize: 11, color: diff > 0 ? T.danger : diff < 0 ? T.accent : T.textDim, minWidth: 56, textAlign: "right" }}>
+                        {diff === 0 ? "no change" : `${diff > 0 ? "+" : ""}${pct.toFixed(1)}%`}
+                      </span>
+                    </div>
                   </div>
-                </div>
-              );
-            })}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, padding: "10px 0 4px", borderTop: `2px solid ${T.borderHi}`, marginTop: 4 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Total Real</div>
-              <div style={{ fontSize: 13, fontFamily: T.fontMono, fontWeight: 600, color: T.text, textAlign: "right" }}>₱{costResult.totals.real.toFixed(2)}</div>
-              <div style={{ fontSize: 13, fontFamily: T.fontMono, fontWeight: 600, color: T.info, textAlign: "right" }}>₱{adjTotalReal.toFixed(2)}</div>
+                );
+              })}
+              {/* Summary totals */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 14 }}>
+                {[
+                  { label: "Real Cost", eng: engRealTotal, adj: whatIfRealTotal, color: T.info },
+                  { label: "Selling Price", eng: engSellingTotal, adj: whatIfSellingTotal, color: T.accent },
+                  { label: "Profit", eng: engProfit, adj: whatIfProfit, color: whatIfProfit >= 0 ? T.accent : T.danger },
+                  { label: "Margin", eng: engMargin, adj: whatIfMargin, isPercent: true, color: whatIfMargin >= 20 ? T.accent : T.warn },
+                ].map((s) => (
+                  <div key={s.label} style={{ background: T.bgCard, borderRadius: 8, padding: "10px 12px", border: `1px solid ${T.border}` }}>
+                    <div style={{ fontSize: 11, color: T.textDim, marginBottom: 4 }}>{s.label}</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
+                      <span style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{s.isPercent ? `${s.eng.toFixed(1)}%` : `₱${s.eng.toFixed(2)}`}</span>
+                      <span style={{ fontSize: 10, color: T.textDim }}>→</span>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: s.color, fontFamily: T.fontMono }}>{s.isPercent ? `${s.adj.toFixed(1)}%` : `₱${s.adj.toFixed(2)}`}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, padding: "6px 0" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Total Selling</div>
-              <div style={{ fontSize: 13, fontFamily: T.fontMono, fontWeight: 600, color: T.accent, textAlign: "right" }}>₱{costResult.totals.charged.toFixed(2)}</div>
-              <div style={{ fontSize: 13, fontFamily: T.fontMono, fontWeight: 600, color: T.info, textAlign: "right" }}>₱{adjTotalSelling.toFixed(2)}</div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, padding: "6px 0" }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Profit</div>
-              <div style={{ fontSize: 13, fontFamily: T.fontMono, fontWeight: 600, color: T.accent, textAlign: "right" }}>₱{costResult.totals.profit.toFixed(2)}</div>
-              <div style={{ fontSize: 13, fontFamily: T.fontMono, fontWeight: 600, color: adjProfit >= 0 ? T.accent : T.danger, textAlign: "right" }}>₱{adjProfit.toFixed(2)}</div>
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, padding: "6px 0" }}>
-              <div style={{ fontSize: 12, color: T.textDim }}>Margin</div>
-              <div style={{ fontSize: 12, fontFamily: T.fontMono, color: T.textDim, textAlign: "right" }}>{costResult.totals.margin.toFixed(1)}%</div>
-              <div style={{ fontSize: 12, fontFamily: T.fontMono, color: adjMargin >= 20 ? T.accent : T.warn, textAlign: "right" }}>{adjMargin.toFixed(1)}%</div>
-            </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
 
       {costResult.formula_error && (
@@ -1863,7 +1916,7 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
         <div className="card">
           <div className="card-title"><span className="card-title-dot" />Allowed Variables</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {["grams","hours","filament_real","filament_charged","electricity_real","electricity_charged","printer_real","printer_charged","real_total","default_charged_total","markup_multiplier","minimum_price"].map((v) => (
+            {["grams","hours","filament_real","filament_charged","electricity_real","electricity_charged","printer_real","printer_charged","real_total","default_charged_total","markup_multiplier","minimum_price","machine_rate","machine_charged","filament_cost","filament_price","electricity_cost","electricity_price","total_cost","filament_price_per_gram","filament_selling_per_gram","elec_kwh"].map((v) => (
               <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>
             ))}
           </div>
@@ -1910,18 +1963,15 @@ function DeadlineBadge({ deadline }) {
   return <span style={{ fontSize: 12, color: T.textMuted }}>{label} ({diff}d)</span>;
 }
 
-function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder }) {
-  const [showAdd, setShowAdd] = useState(false);
+function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder, onAddNew }) {
   const [editOrder, setEditOrder] = useState(null);
   const [filterStatus, setFilterStatus] = useState("All");
   const [sortBy, setSortBy] = useState("deadline");
   const [opLoading, setOpLoading] = useState(false);
   const [opError, setOpError] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
-  const emptyForm = { client_name: "", title: "", description: "", filament_id: "", printer_id: "", deadline: "", status: "Queued", priority: "Normal", estimated_grams: "", estimated_hours: "" };
-  const [form, setForm] = useState(emptyForm);
+  const [form, setForm] = useState(null);
 
-  const openAdd = () => { setForm(emptyForm); setEditOrder(null); setShowAdd(true); setOpError(""); };
   const openEdit = (o) => {
     setForm({
       client_name: o.client_name || "", title: o.title || "", description: o.description || "",
@@ -1930,7 +1980,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
       priority: o.priority || "Normal",
       estimated_grams: o.estimated_grams ?? "", estimated_hours: o.estimated_hours ?? "",
     });
-    setEditOrder(o); setShowAdd(true); setOpError("");
+    setEditOrder(o); setOpError("");
   };
 
   const reloadOrders = async () => {
@@ -1938,11 +1988,11 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
     if (data) setJobOrders(data);
   };
 
-  const saveOrder = async () => {
+  const saveEdit = async () => {
     if (!form.client_name.trim() || !form.title.trim()) { setOpError("Client name and title are required."); return; }
     setOpLoading(true); setOpError("");
     const payload = {
-      client_name: form.client_name.trim(), title: form.title.trim(), description: form.description,
+      client_name: form.client_name.trim(), title: form.title.trim(), description: form.description || "",
       filament_id: form.filament_id || null, printer_id: form.printer_id || null,
       deadline: form.deadline || null, status: form.status, priority: form.priority,
       estimated_grams: form.estimated_grams !== "" ? Number(form.estimated_grams) : null,
@@ -1950,14 +2000,9 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
       updated_at: new Date().toISOString(),
     };
     try {
-      if (editOrder) {
-        const { error } = await supabase.from("job_orders").update(payload).eq("id", editOrder.id);
-        if (error) throw new Error(error.message);
-      } else {
-        const { error } = await supabase.from("job_orders").insert({ ...payload, created_at: new Date().toISOString() });
-        if (error) throw new Error(error.message);
-      }
-      await reloadOrders(); setShowAdd(false); setEditOrder(null); setForm(emptyForm);
+      const { error } = await supabase.from("job_orders").update(payload).eq("id", editOrder.id);
+      if (error) throw new Error(error.message);
+      await reloadOrders(); setEditOrder(null); setForm(null);
     } catch (err) { setOpError(err.message || "Failed to save."); }
     finally { setOpLoading(false); }
   };
@@ -2004,7 +2049,11 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
           <div className="page-title">Job Orders</div>
           <div className="page-sub">{jobOrders.length} total · {counts.Queued || 0} queued · {counts.Printing || 0} printing</div>
         </div>
-        <button className="btn btn-primary" onClick={openAdd}>+ Add Order</button>
+        <button className="btn btn-primary" onClick={onAddNew}>+ New Job Order</button>
+      </div>
+
+      <div style={{ marginBottom: 16, padding: "10px 16px", background: T.bgInput, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 12, color: T.textMuted }}>
+        💡 <strong style={{ color: T.text }}>How it works:</strong> Click <strong style={{ color: T.accent }}>+ New Job Order</strong> to queue a job via the New Job wizard. Once queued, click <strong style={{ color: T.accent }}>▶ Start Job</strong> on any order to load it into the New Job form for pricing and finalizing.
       </div>
 
       {opError && (
@@ -2043,7 +2092,8 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>{filterStatus === "All" ? "No job orders yet" : `No orders with status "${filterStatus}"`}</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Click "+ Add Order" to queue a new print job</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Click "+ New Job Order" to queue a print job through the New Job wizard</div>
+          <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={onAddNew}>+ New Job Order</button>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -2078,7 +2128,6 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                     </div>
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-                    {/* Quick status change */}
                     <select value={order.status} onChange={(e) => updateStatus(order.id, e.target.value)}
                       style={{ fontSize: 12, padding: "5px 8px", background: STATUS_COLORS[order.status]?.bg, border: `1px solid ${STATUS_COLORS[order.status]?.border}`, color: STATUS_COLORS[order.status]?.text, borderRadius: 6, cursor: "pointer" }}>
                       {ORDER_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -2115,16 +2164,16 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         </div>
       )}
 
-      {/* Add / Edit modal */}
-      {showAdd && (
-        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowAdd(false)}>
+      {/* Edit-only modal — no Add modal, Add goes to New Job wizard */}
+      {editOrder && form && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && (setEditOrder(null), setForm(null))}>
           <div className="modal" style={{ width: 540, maxHeight: "90vh", overflowY: "auto" }}>
-            <h3>{editOrder ? "Edit Order" : "New Job Order"}</h3>
+            <h3>Edit Job Order</h3>
 
             <div className="input-row">
               <div className="input-group">
                 <label>Client Name *</label>
-                <input type="text" placeholder="e.g. Maria Santos" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} />
+                <input type="text" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} />
               </div>
               <div className="input-group">
                 <label>Deadline</label>
@@ -2134,12 +2183,12 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
 
             <div className="input-group">
               <label>Job Title *</label>
-              <input type="text" placeholder="e.g. Dragon figurine x2, Phone stand" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+              <input type="text" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
             </div>
 
             <div className="input-group">
               <label>Description / Notes</label>
-              <textarea rows={2} placeholder="Color, special requirements, file name…" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} />
+              <textarea rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} />
             </div>
 
             <div className="input-row">
@@ -2178,14 +2227,14 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
               <div className="input-group">
                 <label>Est. Weight (g)</label>
                 <div className="input-addon">
-                  <input type="number" min={1} step={1} placeholder="e.g. 120" value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <input type="number" min={1} step={1} value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
                   <span className="input-suffix">g</span>
                 </div>
               </div>
               <div className="input-group">
                 <label>Est. Time (hours)</label>
                 <div className="input-addon">
-                  <input type="number" min={0} step={0.5} placeholder="e.g. 5.5" value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <input type="number" min={0} step={0.5} value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
                   <span className="input-suffix">hrs</span>
                 </div>
               </div>
@@ -2193,8 +2242,8 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
 
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>{opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setShowAdd(false)} disabled={opLoading}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>{opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}</button>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setEditOrder(null); setForm(null); }} disabled={opLoading}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveEdit} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>{opLoading ? "Saving…" : "Update Order"}</button>
             </div>
           </div>
         </div>
