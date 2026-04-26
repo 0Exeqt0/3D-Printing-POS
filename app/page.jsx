@@ -69,8 +69,14 @@ function _computeEngine(job, PRINTER_DB) {
   const { printers, filament, grams, hours, elecRate = 0.12, pricingConfig = DEFAULT_PRICING_CONFIG } = job;
   if (!filament || !grams || !hours || !printers?.length) return null;
 
-  const filamentReal = (grams / 1000) * filament.price_per_kg;
+  // Use true_cost_per_kg if set, fall back to price_per_kg
+  const trueCostKg = Number(filament.true_cost_per_kg ?? filament.price_per_kg ?? 0);
+  // Use selling_price_per_kg if set, fall back to type/finish multiplier on true cost
+  const sellingKg = Number(filament.selling_price_per_kg ?? 0);
+  const filamentReal = (grams / 1000) * trueCostKg;
   const filamentCharged = (() => {
+    if (sellingKg > 0) return (grams / 1000) * sellingKg;
+    // Fallback: apply type/finish multipliers on true cost
     const base = filamentReal;
     const typeMulti = { PLA: 1.6, "PLA+": 1.75, Silk: 2.1, PETG: 1.85 }[filament.type] ?? 1.7;
     const finishMulti = { matte: 1.0, glossy: 1.05, silk: 1.15, metallic: 1.1 }[filament.finish] ?? 1.0;
@@ -415,7 +421,7 @@ export default function App() {
           supabase.from("filaments").select("*").eq("active", true).order("brand"),
           supabase.from("printers").select("*").eq("active", true).order("name"),
           supabase.from("pricing_settings").select("*").eq("id", "default").single(),
-          supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false }),
+          supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false }).then(r => r).catch(() => ({ data: [] })),
         ]);
         if (filErr) throw new Error(`Filaments: ${filErr.message}`);
         if (prErr) throw new Error(`Printers: ${prErr.message}`);
@@ -775,7 +781,13 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
                 <span className="fil-name">{f.color}</span>
                 <span className="badge badge-info">{f.type}</span>
               </div>
-              <div className="fil-meta">{f.brand} · {f.finish} · ₱{f.price_per_kg}/kg · ₱{(f.price_per_kg/1000).toFixed(4)}/g</div>
+              <div className="fil-meta">
+                {f.brand} · {f.finish}
+                {f.true_cost_per_kg != null
+                  ? <> · <span style={{ color: T.info }}>true: ₱{(f.true_cost_per_kg/1000).toFixed(4)}/g</span></>
+                  : <> · <span style={{ color: T.textDim }}>₱{(f.price_per_kg/1000).toFixed(4)}/g</span></>}
+                {f.selling_price_per_kg != null && <> · <span style={{ color: T.accent }}>sell: ₱{(f.selling_price_per_kg/1000).toFixed(4)}/g</span></>}
+              </div>
             </div>
           ))}
         </div>
@@ -1218,7 +1230,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   const [confirmDelete, setConfirmDelete] = useState(null); // filament object to delete
   const [dbFilamentTypes, setDbFilamentTypes] = useState([]);
   const [dbFinishTypes, setDbFinishTypes] = useState([]);
-  const [form, setForm] = useState({ brand: "", type: "", color: "", finish: "", price_per_kg: 25 });
+  const [form, setForm] = useState({ brand: "", type: "", color: "", finish: "", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
   const [opError, setOpError] = useState("");
   const [opLoading, setOpLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -1231,17 +1243,17 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   }, [filaments]);
 
   const openAdd = () => {
-    setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25 });
+    setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
     setEditFil(null); setShowAddFil(true); setOpError("");
   };
 
   const openEdit = (f) => {
-    setForm({ brand: f.brand, type: f.type, color: f.color, finish: f.finish, price_per_kg: f.price_per_kg });
+    setForm({ brand: f.brand, type: f.type, color: f.color, finish: f.finish, price_per_kg: f.price_per_kg, true_cost_per_kg: f.true_cost_per_kg ?? "", selling_price_per_kg: f.selling_price_per_kg ?? "" });
     setEditFil(f.id); setShowAddFil(true); setOpError("");
   };
 
   const openDupe = (f) => {
-    setForm({ brand: f.brand, type: f.type, color: f.color + " (Copy)", finish: f.finish, price_per_kg: f.price_per_kg });
+    setForm({ brand: f.brand, type: f.type, color: f.color + " (Copy)", finish: f.finish, price_per_kg: f.price_per_kg, true_cost_per_kg: f.true_cost_per_kg ?? "", selling_price_per_kg: f.selling_price_per_kg ?? "" });
     setEditFil(null); setShowAddFil(true); setOpError("");
   };
 
@@ -1251,19 +1263,24 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
     try {
       if (editFil) {
         const { error } = await supabase.from("filaments").update({
-          brand: form.brand, type: form.type, color: form.color,
-          finish: form.finish, price_per_kg: Number(form.price_per_kg),
+          brand: form.brand, type: form.type, color: form.color, finish: form.finish,
+          price_per_kg: Number(form.price_per_kg),
+          true_cost_per_kg: form.true_cost_per_kg !== "" ? Number(form.true_cost_per_kg) : null,
+          selling_price_per_kg: form.selling_price_per_kg !== "" ? Number(form.selling_price_per_kg) : null,
         }).eq("id", editFil);
         if (error) throw new Error(error.message);
       } else {
         const { error } = await supabase.from("filaments").insert({
-          brand: form.brand, type: form.type, color: form.color,
-          finish: form.finish, price_per_kg: Number(form.price_per_kg), active: true,
+          brand: form.brand, type: form.type, color: form.color, finish: form.finish,
+          price_per_kg: Number(form.price_per_kg),
+          true_cost_per_kg: form.true_cost_per_kg !== "" ? Number(form.true_cost_per_kg) : null,
+          selling_price_per_kg: form.selling_price_per_kg !== "" ? Number(form.selling_price_per_kg) : null,
+          active: true,
         });
         if (error) throw new Error(error.message);
       }
       await reloadFilaments();
-      setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25 });
+      setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
       setEditFil(null); setShowAddFil(false);
     } catch (err) {
       setOpError(err.message);
@@ -1322,8 +1339,9 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
                 <th>Filament</th>
                 <th>Type</th>
                 <th>Finish</th>
-                <th>₱/kg</th>
-                <th>₱/g</th>
+                <th>₱/kg (ref)</th>
+                <th>True cost/g</th>
+                <th>Selling/g</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -1342,7 +1360,16 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
                   <td><span className="badge badge-info">{f.type}</span></td>
                   <td><span className="tag">{f.finish}</span></td>
                   <td style={{ fontFamily: T.fontMono }}>₱{f.price_per_kg}</td>
-                  <td style={{ fontFamily: T.fontMono, color: T.textDim }}>₱{(f.price_per_kg / 1000).toFixed(4)}</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.info }}>
+                    {f.true_cost_per_kg != null
+                      ? <>₱{(f.true_cost_per_kg / 1000).toFixed(4)}<br /><span style={{ fontSize: 10, color: T.textDim }}>₱{f.true_cost_per_kg}/kg</span></>
+                      : <span style={{ color: T.textDim }}>₱{(f.price_per_kg / 1000).toFixed(4)}<br /><span style={{ fontSize: 10 }}>(from ref)</span></span>}
+                  </td>
+                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>
+                    {f.selling_price_per_kg != null
+                      ? <>₱{(f.selling_price_per_kg / 1000).toFixed(4)}<br /><span style={{ fontSize: 10, color: T.textDim }}>₱{f.selling_price_per_kg}/kg</span></>
+                      : <span style={{ color: T.textDim, fontSize: 11 }}>auto ×multiplier</span>}
+                  </td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(f)}>Edit</button>
@@ -1407,9 +1434,33 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
               </div>
             </div>
             <div className="input-group">
-              <label>Price per kg (₱)</label>
+              <label>Reference Price per kg (₱) <span style={{ color: T.textDim, fontSize: 10 }}>— used as fallback if true cost not set</span></label>
               <input type="number" value={form.price_per_kg} min={1} onChange={(e) => setForm((f) => ({ ...f, price_per_kg: +e.target.value }))} />
             </div>
+            <div className="input-row">
+              <div className="input-group">
+                <label>True Cost per kg (₱) <span style={{ color: T.info, fontSize: 10 }}>— what you actually pay</span></label>
+                <div className="input-addon">
+                  <span className="input-prefix">₱</span>
+                  <input type="number" min={0} step={0.01} placeholder="e.g. 800" value={form.true_cost_per_kg} onChange={(e) => setForm((f) => ({ ...f, true_cost_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+                {form.true_cost_per_kg !== "" && <div style={{ fontSize: 11, color: T.info, marginTop: 3 }}>₱/g: {(Number(form.true_cost_per_kg)/1000).toFixed(4)}</div>}
+              </div>
+              <div className="input-group">
+                <label>Selling Price per kg (₱) <span style={{ color: T.accent, fontSize: 10 }}>— charged to client</span></label>
+                <div className="input-addon">
+                  <span className="input-prefix">₱</span>
+                  <input type="number" min={0} step={0.01} placeholder="e.g. 1400" value={form.selling_price_per_kg} onChange={(e) => setForm((f) => ({ ...f, selling_price_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+                {form.selling_price_per_kg !== "" && <div style={{ fontSize: 11, color: T.accent, marginTop: 3 }}>₱/g: {(Number(form.selling_price_per_kg)/1000).toFixed(4)}</div>}
+              </div>
+            </div>
+            {form.true_cost_per_kg !== "" && form.selling_price_per_kg !== "" && (
+              <div style={{ padding: "8px 12px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 8, fontSize: 12, marginBottom: 8 }}>
+                Margin: <strong style={{ color: T.accent }}>{(((Number(form.selling_price_per_kg) - Number(form.true_cost_per_kg)) / Number(form.selling_price_per_kg)) * 100).toFixed(1)}%</strong>
+                &nbsp;· Markup: <strong style={{ color: T.accent }}>×{(Number(form.selling_price_per_kg) / Number(form.true_cost_per_kg)).toFixed(2)}</strong>
+              </div>
+            )}
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>Error: {opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setShowAddFil(false)} disabled={opLoading}>Cancel</button>
@@ -1529,7 +1580,12 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
                     <span className="badge badge-info">{f.type}</span>
                     <span className="tag">{f.finish}</span>
                   </div>
-                  <div className="params-field-sub">{f.brand} · Current: ₱{f.price_per_kg}/kg · ₱{(f.price_per_kg/1000).toFixed(4)}/g</div>
+                  <div className="params-field-sub">
+                    {f.brand}
+                    {" · "}<span style={{ color: T.textDim }}>ref: ₱{f.price_per_kg}/kg</span>
+                    {f.true_cost_per_kg != null && <>{" · "}<span style={{ color: T.info }}>true: ₱{f.true_cost_per_kg}/kg (₱{(f.true_cost_per_kg/1000).toFixed(4)}/g)</span></>}
+                    {f.selling_price_per_kg != null && <>{" · "}<span style={{ color: T.accent }}>sell: ₱{f.selling_price_per_kg}/kg (₱{(f.selling_price_per_kg/1000).toFixed(4)}/g)</span></>}
+                  </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                   <label style={{ margin: 0, fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}>₱/kg</label>
