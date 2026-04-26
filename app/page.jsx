@@ -27,11 +27,13 @@ const T = {
   fontSans: "'DM Sans', system-ui, sans-serif",
 };
 
-const EMPTY_PRICING_CONFIG = {
-  electricity_rate: "",
-  minimum_price: "",
-  markup_multiplier: "",
-  formula: "",
+const DEFAULT_PRICING_CONFIG = {
+  electricity_rate: 12,
+  minimum_price: 100,
+  markup_multiplier: 1.0,
+  formula: "default_charged_total * markup_multiplier",
+  true_electricity_cost: null,
+  selling_electricity_cost: null,
 };
 
 function dbPrinterToInternal(row) {
@@ -65,61 +67,23 @@ function _evaluatePricingFormula(formula, variables) {
   return result;
 }
 
-function _isPositiveNumber(value) {
-  const num = Number(value);
-  return Number.isFinite(num) && num > 0;
-}
-
-function _isPresent(value) {
-  return value !== null && value !== undefined && String(value).trim() !== "";
-}
-
-function getSetupIssues({ selectedFil, selectedPrinters, printerDB, pricingConfig }) {
-  const issues = [];
-
-  if (!selectedFil) {
-    issues.push("Select a filament from the database.");
-  } else {
-    if (!_isPositiveNumber(selectedFil.true_cost_per_kg)) issues.push("Set filament true_cost_per_kg in the database.");
-    if (!_isPositiveNumber(selectedFil.selling_price_per_kg)) issues.push("Set filament selling_price_per_kg in the database.");
-  }
-
-  if (!selectedPrinters?.length) {
-    issues.push("Select at least one printer.");
-  } else {
-    for (const alloc of selectedPrinters) {
-      const p = printerDB[alloc.id];
-      if (!p) {
-        issues.push(`Printer ${alloc.id} was not found in the database.`);
-        continue;
-      }
-      if (!_isPositiveNumber(p.wattage)) issues.push(`Set wattage for ${p.name}.`);
-      if (!_isPositiveNumber(p._p.base)) issues.push(`Set base_rate for ${p.name}.`);
-      if (!_isPositiveNumber(p._p.eff)) issues.push(`Set efficiency for ${p.name}.`);
-      if (!_isPositiveNumber(p._p.labor)) issues.push(`Set labor for ${p.name}.`);
-      if (!_isPositiveNumber(p._p.mult)) issues.push(`Set multiplier for ${p.name}.`);
-    }
-  }
-
-  if (!_isPositiveNumber(pricingConfig?.electricity_rate)) issues.push("Set pricing_settings.electricity_rate.");
-  if (!_isPresent(pricingConfig?.minimum_price) || Number(pricingConfig.minimum_price) < 0) issues.push("Set pricing_settings.minimum_price.");
-  if (!_isPositiveNumber(pricingConfig?.markup_multiplier)) issues.push("Set pricing_settings.markup_multiplier.");
-  if (!_isPresent(pricingConfig?.formula)) issues.push("Set pricing_settings.formula.");
-
-  return issues;
-}
-
 function _computeEngine(job, PRINTER_DB) {
-  const { printers, filament, grams, hours, elecRate, pricingConfig = EMPTY_PRICING_CONFIG } = job;
+  const { printers, filament, grams, hours, elecRate = 0.12, pricingConfig = DEFAULT_PRICING_CONFIG } = job;
   if (!filament || !grams || !hours || !printers?.length) return null;
 
-  const setupIssues = getSetupIssues({ selectedFil: filament, selectedPrinters: printers, printerDB: PRINTER_DB, pricingConfig });
-  if (setupIssues.length > 0) return null;
-
-  const trueCostKg = Number(filament.true_cost_per_kg);
-  const sellingKg = Number(filament.selling_price_per_kg);
+  // Use true_cost_per_kg if set, fall back to price_per_kg
+  const trueCostKg = Number(filament.true_cost_per_kg ?? filament.price_per_kg ?? 0);
+  // Use selling_price_per_kg if set, fall back to type/finish multiplier on true cost
+  const sellingKg = Number(filament.selling_price_per_kg ?? 0);
   const filamentReal = (grams / 1000) * trueCostKg;
-  const filamentCharged = (grams / 1000) * sellingKg;
+  const filamentCharged = (() => {
+    if (sellingKg > 0) return (grams / 1000) * sellingKg;
+    // Fallback: apply type/finish multipliers on true cost
+    const base = filamentReal;
+    const typeMulti = { PLA: 1.6, "PLA+": 1.75, Silk: 2.1, PETG: 1.85 }[filament.type] ?? 1.7;
+    const finishMulti = { matte: 1.0, glossy: 1.05, silk: 1.15, metallic: 1.1 }[filament.finish] ?? 1.0;
+    return base * typeMulti * finishMulti;
+  })();
 
   let elecReal = 0, elecCharged = 0, printerReal = 0, printerCharged = 0;
   const perPrinterBreakdown = [];
@@ -152,21 +116,31 @@ function _computeEngine(job, PRINTER_DB) {
   let computedChargedTotal = defaultChargedTotal;
 
   try {
-    const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, {
+    const formulaVariables = {
       grams, hours,
       filament_real: filamentReal, filament_charged: filamentCharged,
       electricity_real: elecReal, electricity_charged: elecCharged,
       printer_real: printerReal, printer_charged: printerCharged,
       real_total: totalReal, default_charged_total: defaultChargedTotal,
-      markup_multiplier: Number(pricingConfig.markup_multiplier),
-      minimum_price: Number(pricingConfig.minimum_price),
-    });
+      markup_multiplier: Number(pricingConfig.markup_multiplier || 1),
+      minimum_price: Number(pricingConfig.minimum_price || 0),
+      // Convenience per-gram/per-hour aliases
+      filament_price_per_gram: trueCostKg / 1000,
+      filament_selling_per_gram: sellingKg > 0 ? sellingKg / 1000 : (trueCostKg / 1000),
+      true_cost_per_kg: trueCostKg,
+      selling_price_per_kg: sellingKg > 0 ? sellingKg : trueCostKg,
+      elec_kwh: +(printers.reduce((acc, alloc) => {
+        const p = PRINTER_DB[alloc.id]; if (!p) return acc;
+        return acc + (p.wattage / 1000) * (hours * alloc.pct / 100);
+      }, 0).toFixed(4)),
+    };
+    const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, formulaVariables);
     if (formulaPrice !== null) computedChargedTotal = formulaPrice;
   } catch (err) {
     formulaError = err.message || "Formula error. Using default engine price.";
   }
 
-  const totalCharged = Math.max(computedChargedTotal, Number(pricingConfig.minimum_price));
+  const totalCharged = Math.max(computedChargedTotal, Number(pricingConfig.minimum_price || 0));
   const profit = totalCharged - totalReal;
   const margin = totalCharged > 0 ? (profit / totalCharged) * 100 : 0;
 
@@ -433,99 +407,19 @@ select option { background: ${T.bgCard}; }
 }
 `;
 
-
-function LoginView({ onLogin }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [mode, setMode] = useState("signin");
-  const [message, setMessage] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const submit = async (event) => {
-    event.preventDefault();
-    setBusy(true);
-    setMessage("");
-
-    const result = mode === "signin"
-      ? await supabase.auth.signInWithPassword({ email, password })
-      : await supabase.auth.signUp({ email, password });
-
-    if (result.error) setMessage(result.error.message);
-    else if (result.data.session) onLogin(result.data.session);
-    else setMessage("Account created. If email confirmation is enabled, confirm your email before signing in.");
-
-    setBusy(false);
-  };
-
-  return (
-    <>
-      <style>{css}</style>
-      <div className="loading-screen" style={{ padding: 20 }}>
-        <div className="card" style={{ width: 420, maxWidth: "100%" }}>
-          <div className="card-title"><span className="card-title-dot" />Staff Login</div>
-          <form onSubmit={submit}>
-            <div className="input-group">
-              <label>Email</label>
-              <input type="text" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" />
-            </div>
-            <div className="input-group">
-              <label>Password</label>
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Password" />
-            </div>
-            {message && <div className="validation-gate" style={{ marginBottom: 12 }}>{message}</div>}
-            <button className="btn btn-primary" type="submit" disabled={busy || !email || !password} style={{ width: "100%" }}>
-              {busy ? "Please wait…" : mode === "signin" ? "Sign In" : "Create Account"}
-            </button>
-          </form>
-          <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10 }} onClick={() => setMode(mode === "signin" ? "signup" : "signin")}>
-            {mode === "signin" ? "Create account" : "I already have an account"}
-          </button>
-        </div>
-      </div>
-    </>
-  );
-}
-
 export default function App() {
   const [view, setView] = useState("pos");
   const [step, setStep] = useState(1);
   const [filaments, setFilaments] = useState([]);
   const [printerDB, setPrinterDB] = useState({});
   const [printerRows, setPrinterRows] = useState([]);
-  const [pricingConfig, setPricingConfig] = useState(EMPTY_PRICING_CONFIG);
+  const [pricingConfig, setPricingConfig] = useState(DEFAULT_PRICING_CONFIG);
   const [completedJobs, setCompletedJobs] = useState([]);
   const [jobOrders, setJobOrders] = useState([]);
-  const [session, setSession] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [dbLoading, setDbLoading] = useState(false);
+  const [dbLoading, setDbLoading] = useState(true);
   const [dbError, setDbError] = useState("");
 
   useEffect(() => {
-    if (!supabaseUrl || !supabaseAnonKey) {
-      setDbError("Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY.");
-      setAuthLoading(false);
-      return;
-    }
-
-    supabase.auth.getSession().then(({ data, error }) => {
-      if (error) setDbError(error.message);
-      setSession(data?.session || null);
-      setAuthLoading(false);
-    });
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession);
-    });
-
-    return () => listener?.subscription?.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (!session) {
-      setDbLoading(false);
-      return;
-    }
-
     async function loadAll() {
       setDbLoading(true);
       setDbError("");
@@ -552,13 +446,13 @@ export default function App() {
         if (ordersData) setJobOrders(ordersData);
         if (psData) {
           setPricingConfig({
-            electricity_rate: psData.electricity_rate,
-            minimum_price: psData.minimum_price,
-            markup_multiplier: psData.markup_multiplier,
+            electricity_rate: Number(psData.electricity_rate),
+            minimum_price: Number(psData.minimum_price),
+            markup_multiplier: Number(psData.markup_multiplier),
             formula: psData.formula,
+            true_electricity_cost: psData.true_electricity_cost != null ? Number(psData.true_electricity_cost) : null,
+            selling_electricity_cost: psData.selling_electricity_cost != null ? Number(psData.selling_electricity_cost) : null,
           });
-        } else {
-          setPricingConfig(EMPTY_PRICING_CONFIG);
         }
       } catch (err) {
         setDbError(err.message || "Failed to load data from database.");
@@ -567,7 +461,7 @@ export default function App() {
       }
     }
     loadAll();
-  }, [session]);
+  }, []);
 
   const reloadFilaments = useCallback(async () => {
     const { data, error } = await supabase.from("filaments").select("*").order("brand");
@@ -587,8 +481,8 @@ export default function App() {
   const [jobType, setJobType] = useState("");
   const [selectedPrinters, setSelectedPrinters] = useState([]);
   const [selectedFil, setSelectedFil] = useState(null);
-  const [grams, setGrams] = useState("");
-  const [hours, setHours] = useState("");
+  const [grams, setGrams] = useState(50);
+  const [hours, setHours] = useState(3);
   const [costResult, setCostResult] = useState(null);
   const [customPrice, setCustomPrice] = useState(null);
   const [clientName, setClientName] = useState("");
@@ -599,8 +493,6 @@ export default function App() {
   const [filSearch, setFilSearch] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
-
-  const setupIssues = getSetupIssues({ selectedFil, selectedPrinters, printerDB, pricingConfig });
 
   const togglePrinter = (id) => {
     setSelectedPrinters((prev) => {
@@ -636,22 +528,22 @@ export default function App() {
       case 1: return !!jobType;
       case 2: return selectedPrinters.length > 0;
       case 3: return !!selectedFil;
-      case 4: return Number(grams) > 0 && Number(hours) > 0 && setupIssues.length === 0;
+      case 4: return grams > 0 && hours > 0;
       case 5: return !!costResult;
       case 6: return true;
       case 7: return clientName.trim().length > 0;
       case 8: return true;
       default: return false;
     }
-  }, [step, jobType, selectedPrinters, selectedFil, grams, hours, costResult, clientName, setupIssues.length]);
+  }, [step, jobType, selectedPrinters, selectedFil, grams, hours, costResult, clientName]);
 
   useEffect(() => {
-    if (step === 5 && selectedFil && Number(grams) > 0 && Number(hours) > 0 && selectedPrinters.length > 0 && setupIssues.length === 0) {
-      const r = _computeEngine({ printers: selectedPrinters, filament: selectedFil, grams: Number(grams), hours: Number(hours), elecRate: Number(pricingConfig.electricity_rate), pricingConfig }, printerDB);
+    if (step === 5 && selectedFil && grams && hours && selectedPrinters.length > 0) {
+      const r = _computeEngine({ printers: selectedPrinters, filament: selectedFil, grams, hours, elecRate: pricingConfig.electricity_rate, pricingConfig }, printerDB);
       setCostResult(r);
       if (r) setCustomPrice(r.totals.charged);
     }
-  }, [step, selectedFil, grams, hours, selectedPrinters, pricingConfig, printerDB, setupIssues.length]);
+  }, [step, selectedFil, grams, hours, selectedPrinters, pricingConfig, printerDB]);
 
   const goNext = () => { if (stepValid()) setStep((s) => Math.min(8, s + 1)); };
   const goBack = () => { setStep((s) => Math.max(1, s - 1)); if (step <= 5) setCostResult(null); };
@@ -677,6 +569,11 @@ export default function App() {
       }
       const job = { id: jobData.id, date: new Date().toLocaleDateString(), jobType, clientName, deadline, notes, parts, grams, hours, filament: selectedFil, printers: selectedPrinters, printerDB, cost: costResult, finalPrice };
       setCompletedJobs((prev) => [job, ...prev]);
+      // Mark linked job order as Done
+      if (activeOrderId) {
+        await supabase.from("job_orders").update({ status: "Done", updated_at: new Date().toISOString() }).eq("id", activeOrderId);
+        setJobOrders((prev) => prev.map((o) => o.id === activeOrderId ? { ...o, status: "Done" } : o));
+      }
       setShowReceipt(true);
     } catch (err) {
       setSaveError(err.message || "Failed to save job.");
@@ -685,32 +582,44 @@ export default function App() {
     }
   };
 
+  const [activeOrderId, setActiveOrderId] = useState(null); // job_order id linked to current New Job
+
+  const startJobFromOrder = (order) => {
+    // Reset first, then pre-fill from order data
+    setStep(1); setJobType(""); setSelectedPrinters([]); setSelectedFil(null);
+    setGrams(50); setHours(3); setCostResult(null); setCustomPrice(null);
+    setClientName(""); setDeadline(""); setNotes(""); setParts("");
+    setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
+    // Pre-fill from order
+    if (order.filament_id) {
+      const fil = filaments.find((f) => f.id === order.filament_id);
+      if (fil) setSelectedFil(fil);
+    }
+    if (order.printer_id) {
+      const hasPrinter = printerRows.find((p) => p.id === order.printer_id);
+      if (hasPrinter) setSelectedPrinters([{ id: order.printer_id, pct: 100 }]);
+    }
+    if (order.estimated_grams) setGrams(Number(order.estimated_grams));
+    if (order.estimated_hours) setHours(Number(order.estimated_hours));
+    setClientName(order.client_name || "");
+    setDeadline(order.deadline || "");
+    setNotes(order.description || "");
+    setParts(order.title || "");
+    setActiveOrderId(order.id);
+    setView("pos");
+    setStep(1);
+  };
+
   const resetJob = () => {
     setStep(1); setJobType(""); setSelectedPrinters([]); setSelectedFil(null);
-    setGrams(""); setHours(""); setCostResult(null); setCustomPrice(null);
+    setGrams(50); setHours(3); setCostResult(null); setCustomPrice(null);
     setClientName(""); setDeadline(""); setNotes(""); setParts("");
-    setShowReceipt(false); setSaveError("");
+    setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
   };
 
   const filteredFils = filaments.filter(
     (f) => f.active && (filSearch === "" || `${f.brand} ${f.type} ${f.color}`.toLowerCase().includes(filSearch.toLowerCase()))
   );
-
-  if (authLoading) {
-    return (
-      <>
-        <style>{css}</style>
-        <div className="loading-screen">
-          <div className="loading-spinner" />
-          <div style={{ fontSize: 13, color: T.textMuted }}>Checking session…</div>
-        </div>
-      </>
-    );
-  }
-
-  if (!session) {
-    return <LoginView onLogin={setSession} />;
-  }
 
   if (dbLoading) {
     return (
@@ -753,7 +662,6 @@ export default function App() {
           <div className="nav-bottom">
             <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{completedJobs.length} jobs this session</div>
             <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>{filaments.filter((f) => f.active).length} active filaments</div>
-            <button className="btn btn-ghost" style={{ width: "100%", marginTop: 10, padding: "7px 10px", fontSize: 11 }} onClick={() => supabase.auth.signOut()}>Sign out</button>
           </div>
         </aside>
 
@@ -772,8 +680,8 @@ export default function App() {
               notes={notes} setNotes={setNotes} parts={parts} setParts={setParts}
               finalizeJob={finalizeJob} saving={saving} saveError={saveError}
               pricingConfig={pricingConfig} setPricingConfig={setPricingConfig}
-              setupIssues={setupIssues}
               reloadFilaments={reloadFilaments} reloadPrinters={reloadPrinters}
+              activeOrderId={activeOrderId} jobOrders={jobOrders}
             />
           )}
           {view === "pos" && showReceipt && completedJobs[0] && <ReceiptView job={completedJobs[0]} onNew={resetJob} />}
@@ -782,12 +690,11 @@ export default function App() {
             <ParametersView
               filaments={filaments} printerRows={printerRows} printerDB={printerDB}
               pricingConfig={pricingConfig} setPricingConfig={setPricingConfig}
-              setupIssues={setupIssues}
               reloadFilaments={reloadFilaments} reloadPrinters={reloadPrinters}
               grams={grams} hours={hours} selectedFil={selectedFil} selectedPrinters={selectedPrinters}
             />
           )}
-          {view === "orders" && <JobOrdersView jobOrders={jobOrders} setJobOrders={setJobOrders} filaments={filaments} printerRows={printerRows} />}
+          {view === "orders" && <JobOrdersView jobOrders={jobOrders} setJobOrders={setJobOrders} filaments={filaments} printerRows={printerRows} startJobFromOrder={startJobFromOrder} />}
           {view === "jobs" && <JobsView jobs={completedJobs} />}
           {view === "analytics" && <AnalyticsView jobs={completedJobs} />}
           {view === "settings" && <PricingSettingsView pricingConfig={pricingConfig} setPricingConfig={setPricingConfig} />}
@@ -798,13 +705,25 @@ export default function App() {
 }
 
 // ─── POS VIEW ─────────────────────────────────────────────────────────────────
-function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows, filaments, filSearch, setFilSearch, selectedFil, setSelectedFil, grams, setGrams, hours, setHours, costResult, customPrice, setCustomPrice, clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts, finalizeJob, saving, saveError, pricingConfig, setPricingConfig, setupIssues, reloadFilaments, reloadPrinters }) {
+function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows, filaments, filSearch, setFilSearch, selectedFil, setSelectedFil, grams, setGrams, hours, setHours, costResult, customPrice, setCustomPrice, clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts, finalizeJob, saving, saveError, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters, activeOrderId, jobOrders }) {
+  const activeOrder = activeOrderId ? jobOrders?.find((o) => o.id === activeOrderId) : null;
   return (
     <div>
       <div className="page-header">
         <div className="page-title">New Print Job</div>
         <div className="page-sub">Follow the steps to configure and price your job</div>
       </div>
+
+      {/* Active order banner */}
+      {activeOrder && (
+        <div style={{ marginBottom: 16, padding: "10px 16px", background: "rgba(91,156,246,0.10)", border: "1px solid rgba(91,156,246,0.3)", borderRadius: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: T.info }}>📋 From Job Order:</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{activeOrder.title}</span>
+          <span style={{ fontSize: 12, color: T.textMuted }}>· {activeOrder.client_name}</span>
+          {activeOrder.deadline && <span style={{ fontSize: 12, color: T.warn }}>· Due {activeOrder.deadline}</span>}
+          <span style={{ marginLeft: "auto", fontSize: 11, color: T.textDim }}>Will mark order Done on finalize</span>
+        </div>
+      )}
       <div className="stepper">
         {STEPS.map((s, i) => (
           <div key={s.id} className="step-item">
@@ -820,8 +739,8 @@ function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selecte
       {step === 1 && <Step1 jobType={jobType} setJobType={setJobType} />}
       {step === 2 && <Step2 selectedPrinters={selectedPrinters} togglePrinter={togglePrinter} setPrinterPct={setPrinterPct} printerDB={printerDB} printerRows={printerRows} />}
       {step === 3 && <Step3 filaments={filaments} filSearch={filSearch} setFilSearch={setFilSearch} selectedFil={selectedFil} setSelectedFil={setSelectedFil} />}
-      {step === 4 && <Step4 grams={grams} setGrams={setGrams} hours={hours} setHours={setHours} selectedFil={selectedFil} setupIssues={setupIssues} />}
-      {step === 5 && <Step5 costResult={costResult} pricingConfig={pricingConfig} />}
+      {step === 4 && <Step4 grams={grams} setGrams={setGrams} hours={hours} setHours={setHours} selectedFil={selectedFil} />}
+      {step === 5 && <Step5 costResult={costResult} pricingConfig={pricingConfig} selectedFil={selectedFil} />}
       {step === 6 && <Step6 costResult={costResult} customPrice={customPrice} setCustomPrice={setCustomPrice} />}
       {step === 7 && <Step7 clientName={clientName} setClientName={setClientName} deadline={deadline} setDeadline={setDeadline} notes={notes} setNotes={setNotes} parts={parts} setParts={setParts} />}
       {step === 8 && <Step8 jobType={jobType} selectedPrinters={selectedPrinters} printerDB={printerDB} selectedFil={selectedFil} grams={grams} hours={hours} costResult={costResult} customPrice={customPrice} clientName={clientName} deadline={deadline} notes={notes} parts={parts} />}
@@ -938,13 +857,10 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
 }
 
 // Step 4 — number inputs for grams and split hrs/min
-function Step4({ grams, setGrams, hours, setHours, selectedFil, setupIssues }) {
-  const gramValue = Number(grams) || 0;
-  const hourValue = Number(hours) || 0;
-  const trueFilamentCost = selectedFil?.true_cost_per_kg != null ? (gramValue / 1000) * Number(selectedFil.true_cost_per_kg) : null;
-  const sellingFilamentCost = selectedFil?.selling_price_per_kg != null ? (gramValue / 1000) * Number(selectedFil.selling_price_per_kg) : null;
-  const wholeHrs = Math.floor(hourValue);
-  const mins = Math.round((hourValue - wholeHrs) * 60);
+function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
+  const exactFilamentCost = selectedFil ? (grams / 1000) * Number(selectedFil.price_per_kg || 0) : 0;
+  const wholeHrs = Math.floor(hours);
+  const mins = Math.round((hours - wholeHrs) * 60);
 
   const handleHrsChange = (v) => {
     const h = Math.max(0, Number(v) || 0);
@@ -955,7 +871,7 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, setupIssues }) {
     setHours(+(wholeHrs + m / 60).toFixed(4));
   };
 
-  const totalMin = Math.round(hourValue * 60);
+  const totalMin = Math.round(hours * 60);
 
   return (
     <div className="card">
@@ -968,25 +884,15 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, setupIssues }) {
         </div>
       )}
 
-      {setupIssues?.length > 0 && (
-        <div className="validation-gate" style={{ marginBottom: 16 }}>
-          Setup required before pricing:<br />
-          {setupIssues.map((issue) => <div key={issue}>• {issue}</div>)}
-        </div>
-      )}
-
       <div className="input-group">
         <label>Filament Usage (grams)</label>
         <div className="input-addon">
-          <input type="number" min={1} step={1} value={grams} onChange={(e) => setGrams(e.target.value)} style={{ borderRadius: "8px 0 0 8px" }} />
+          <input type="number" min={1} step={1} value={grams} onChange={(e) => setGrams(Math.max(1, Number(e.target.value) || 1))} style={{ borderRadius: "8px 0 0 8px" }} />
           <span className="input-suffix">g</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.textDim, marginTop: 6 }}>
-          <span>{(gramValue / 1000).toFixed(3)} kg</span>
-          <span style={{ color: T.textMuted }}>
-            {trueFilamentCost != null ? `true ₱${trueFilamentCost.toFixed(2)}` : "true cost not set"}
-            {sellingFilamentCost != null ? ` · sell ₱${sellingFilamentCost.toFixed(2)}` : " · selling price not set"}
-          </span>
+          <span>{(grams / 1000).toFixed(3)} kg</span>
+          <span style={{ color: T.textMuted }}>{exactFilamentCost.toFixed(2)} ₱ raw material cost</span>
         </div>
       </div>
 
@@ -1009,15 +915,15 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, setupIssues }) {
           </div>
         </div>
         <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
-          Total: <span style={{ color: T.accent, fontFamily: T.fontMono }}>{totalMin} min</span> &nbsp;·&nbsp; {hourValue.toFixed(2)} hrs
+          Total: <span style={{ color: T.accent, fontFamily: T.fontMono }}>{totalMin} min</span> &nbsp;·&nbsp; {hours.toFixed(2)} hrs
         </div>
       </div>
 
       <div className="grid2" style={{ marginTop: 20 }}>
         <div className="stat-card">
           <div className="stat-label">Weight</div>
-          <div className="stat-val">{gramValue}g</div>
-          <div className="stat-sub">{(gramValue / 1000).toFixed(3)} kg</div>
+          <div className="stat-val">{grams}g</div>
+          <div className="stat-sub">{(grams / 1000).toFixed(3)} kg</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Time</div>
@@ -1029,12 +935,23 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil, setupIssues }) {
   );
 }
 
-// Step 5 — cost breakdown with actual vs adjusted comparison + 6 cost parameters
-function Step5({ costResult, pricingConfig }) {
-  const [trueFilKg, setTrueFilKg] = useState("");
-  const [sellingFilKg, setSellingFilKg] = useState("");
-  const [trueElec, setTrueElec] = useState("");
-  const [sellingElec, setSellingElec] = useState("");
+// Step 5 — cost breakdown with actual vs adjusted comparison (auto-populated from DB)
+function Step5({ costResult, pricingConfig, selectedFil }) {
+  // Pre-populate from filament profile and pricingConfig — user can still override
+  const [trueFilKg, setTrueFilKg] = useState(() => selectedFil?.true_cost_per_kg != null ? String(selectedFil.true_cost_per_kg) : "");
+  const [sellingFilKg, setSellingFilKg] = useState(() => selectedFil?.selling_price_per_kg != null ? String(selectedFil.selling_price_per_kg) : "");
+  const [trueElec, setTrueElec] = useState(() => pricingConfig?.true_electricity_cost != null ? String(pricingConfig.true_electricity_cost) : "");
+  const [sellingElec, setSellingElec] = useState(() => pricingConfig?.selling_electricity_cost != null ? String(pricingConfig.selling_electricity_cost) : "");
+
+  // Sync if filament or pricingConfig changes (e.g. navigating back/forward)
+  useEffect(() => {
+    if (selectedFil?.true_cost_per_kg != null) setTrueFilKg(String(selectedFil.true_cost_per_kg));
+    if (selectedFil?.selling_price_per_kg != null) setSellingFilKg(String(selectedFil.selling_price_per_kg));
+  }, [selectedFil]);
+  useEffect(() => {
+    if (pricingConfig?.true_electricity_cost != null) setTrueElec(String(pricingConfig.true_electricity_cost));
+    if (pricingConfig?.selling_electricity_cost != null) setSellingElec(String(pricingConfig.selling_electricity_cost));
+  }, [pricingConfig]);
 
   if (!costResult)
     return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Computing costs…</p></div>;
@@ -1131,7 +1048,9 @@ function Step5({ costResult, pricingConfig }) {
       {/* ── Actual vs Adjusted Comparison ── */}
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Actual vs Adjusted Cost Comparison</div>
-        <p style={{ fontSize: 12, color: T.textDim, marginBottom: 16 }}>Enter your true/selling rates to compare against the computed engine cost. Leave blank to use engine defaults.</p>
+        <p style={{ fontSize: 12, color: T.textDim, marginBottom: 16 }}>
+          Values are auto-filled from the filament profile and pricing settings. Override any field to compare scenarios.
+        </p>
 
         <div className="grid2" style={{ marginBottom: 16 }}>
           {/* Filament */}
@@ -1384,7 +1303,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   const [confirmDelete, setConfirmDelete] = useState(null); // filament object to delete
   const [dbFilamentTypes, setDbFilamentTypes] = useState([]);
   const [dbFinishTypes, setDbFinishTypes] = useState([]);
-  const [form, setForm] = useState({ brand: "", type: "", color: "", finish: "", price_per_kg: "", true_cost_per_kg: "", selling_price_per_kg: "" });
+  const [form, setForm] = useState({ brand: "", type: "", color: "", finish: "", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
   const [opError, setOpError] = useState("");
   const [opLoading, setOpLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -1392,12 +1311,12 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   useEffect(() => {
     const types = [...new Set(filaments.map((f) => f.type))].filter(Boolean).sort();
     const finishes = [...new Set(filaments.map((f) => f.finish))].filter(Boolean).sort();
-    setDbFilamentTypes(types);
-    setDbFinishTypes(finishes);
+    setDbFilamentTypes(types.length > 0 ? types : ["PLA", "PLA+", "Silk", "PETG"]);
+    setDbFinishTypes(finishes.length > 0 ? finishes : ["Normal", "Matte", "Glossy", "Silk", "Metallic"]);
   }, [filaments]);
 
   const openAdd = () => {
-    setForm({ brand: "", type: dbFilamentTypes[0] || "", color: "", finish: dbFinishTypes[0] || "", price_per_kg: "", true_cost_per_kg: "", selling_price_per_kg: "" });
+    setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
     setEditFil(null); setShowAddFil(true); setOpError("");
   };
 
@@ -1412,7 +1331,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   };
 
   const saveFilament = async () => {
-    if (!form.brand || !form.type || !form.color || !form.finish || form.price_per_kg === "") return;
+    if (!form.brand || !form.color) return;
     setOpLoading(true); setOpError("");
     try {
       if (editFil) {
@@ -1434,7 +1353,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         if (error) throw new Error(error.message);
       }
       await reloadFilaments();
-      setForm({ brand: "", type: dbFilamentTypes[0] || "", color: "", finish: dbFinishTypes[0] || "", price_per_kg: "", true_cost_per_kg: "", selling_price_per_kg: "" });
+      setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
       setEditFil(null); setShowAddFil(false);
     } catch (err) {
       setOpError(err.message);
@@ -1574,13 +1493,17 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
             <div className="input-row">
               <div className="input-group">
                 <label>Type</label>
-                <input type="text" value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} placeholder="e.g. PLA, PETG, Silk" list="filament-type-options" />
-                <datalist id="filament-type-options">{dbFilamentTypes.map((t) => <option key={t} value={t} />)}</datalist>
+                <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
+                  {dbFilamentTypes.map((t) => <option key={t}>{t}</option>)}
+                  {form.type && !dbFilamentTypes.includes(form.type) && <option value={form.type}>{form.type}</option>}
+                </select>
               </div>
               <div className="input-group">
                 <label>Finish</label>
-                <input type="text" value={form.finish} onChange={(e) => setForm((f) => ({ ...f, finish: e.target.value }))} placeholder="e.g. matte, glossy, silk" list="filament-finish-options" />
-                <datalist id="filament-finish-options">{dbFinishTypes.map((t) => <option key={t} value={t} />)}</datalist>
+                <select value={form.finish} onChange={(e) => setForm((f) => ({ ...f, finish: e.target.value }))}>
+                  {dbFinishTypes.map((t) => <option key={t}>{t}</option>)}
+                  {form.finish && !dbFinishTypes.includes(form.finish) && <option value={form.finish}>{form.finish}</option>}
+                </select>
               </div>
             </div>
             <div className="input-group">
@@ -1627,7 +1550,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
 function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters, grams, hours, selectedFil, selectedPrinters }) {
   const [filEdits, setFilEdits] = useState({});
   const [printerEdits, setPrinterEdits] = useState({});
-  const [pricingDraft, setPricingDraft] = useState({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
+  const [pricingDraft, setPricingDraft] = useState({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" });
   const [saving, setSaving] = useState({ fil: false, printers: false, pricing: false });
   const [msgs, setMsgs] = useState({ fil: "", printers: "", pricing: "" });
 
@@ -1682,12 +1605,21 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
       if (pricingDraft.markup_multiplier !== "") payload.markup_multiplier = Number(pricingDraft.markup_multiplier);
       if (pricingDraft.minimum_price !== "") payload.minimum_price = Number(pricingDraft.minimum_price);
       if (pricingDraft.formula !== "") payload.formula = pricingDraft.formula;
+      if (pricingDraft.true_electricity_cost !== "") payload.true_electricity_cost = pricingDraft.true_electricity_cost === "null" ? null : Number(pricingDraft.true_electricity_cost);
+      if (pricingDraft.selling_electricity_cost !== "") payload.selling_electricity_cost = pricingDraft.selling_electricity_cost === "null" ? null : Number(pricingDraft.selling_electricity_cost);
       if (Object.keys(payload).length === 0) { setMsg("pricing", "No changes."); setSaving((s) => ({ ...s, pricing: false })); return; }
       const { error } = await supabase.from("pricing_settings").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", "default");
       if (error) throw new Error(error.message);
       const { data: psData, error: psErr } = await supabase.from("pricing_settings").select("*").eq("id", "default").single();
-      if (!psErr && psData) setPricingConfig({ electricity_rate: Number(psData.electricity_rate), minimum_price: Number(psData.minimum_price), markup_multiplier: Number(psData.markup_multiplier), formula: psData.formula });
-      setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
+      if (!psErr && psData) setPricingConfig({
+        electricity_rate: Number(psData.electricity_rate),
+        minimum_price: Number(psData.minimum_price),
+        markup_multiplier: Number(psData.markup_multiplier),
+        formula: psData.formula,
+        true_electricity_cost: psData.true_electricity_cost != null ? Number(psData.true_electricity_cost) : null,
+        selling_electricity_cost: psData.selling_electricity_cost != null ? Number(psData.selling_electricity_cost) : null,
+      });
+      setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" });
       setMsg("pricing", "Saved.");
     } catch (err) { setMsg("pricing", err.message || "Failed"); }
     finally { setSaving((s) => ({ ...s, pricing: false })); }
@@ -1805,6 +1737,26 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
         </div>
         <div className="params-field-row">
           <div className="params-field-info">
+            <div className="params-field-name">True Electricity Cost</div>
+            <div className="params-field-sub">Actual cost you pay per kWh</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kWh</label>
+            <input type="number" step="0.01" style={{ width: 130 }} placeholder="e.g. 10.50" value={pricingDraft.true_electricity_cost} onChange={(e) => onPricingChange("true_electricity_cost", e.target.value === "" ? "" : e.target.value)} />
+          </div>
+        </div>
+        <div className="params-field-row">
+          <div className="params-field-info">
+            <div className="params-field-name">Selling Electricity Cost</div>
+            <div className="params-field-sub">Rate charged to client per kWh</div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kWh</label>
+            <input type="number" step="0.01" style={{ width: 130 }} placeholder="e.g. 18.00" value={pricingDraft.selling_electricity_cost} onChange={(e) => onPricingChange("selling_electricity_cost", e.target.value === "" ? "" : e.target.value)} />
+          </div>
+        </div>
+        <div className="params-field-row">
+          <div className="params-field-info">
             <div className="params-field-name">Markup Multiplier</div>
             <div className="params-field-sub">Current: ×{pricingConfig?.markup_multiplier ?? "—"}</div>
           </div>
@@ -1831,7 +1783,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
           <textarea rows={3} placeholder={pricingConfig?.formula || "formula"} value={pricingDraft.formula} onChange={(e) => onPricingChange("formula", e.target.value)} style={{ resize: "vertical", width: "100%", fontFamily: T.fontMono }} />
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-          <button className="btn btn-ghost" onClick={() => { setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" }); setMsg("pricing", ""); }}>Reset</button>
+          <button className="btn btn-ghost" onClick={() => { setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" }); setMsg("pricing", ""); }}>Reset</button>
           <button className="btn btn-primary" onClick={savePricing} disabled={saving.pricing}>{saving.pricing ? "Saving…" : "Save Pricing"}</button>
         </div>
         <MsgBanner msg={msgs.pricing} />
@@ -1857,30 +1809,17 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
         grams: 100, hours: 4, filament_real: 65, filament_charged: 120,
         electricity_real: 16.8, electricity_charged: 25, printer_real: 80, printer_charged: 150,
         real_total: 161.8, default_charged_total: 295,
-        markup_multiplier: Number(draft.markup_multiplier), minimum_price: Number(draft.minimum_price),
+        markup_multiplier: Number(draft.markup_multiplier || 1), minimum_price: Number(draft.minimum_price || 0),
       });
-      setTestError(""); setTestPrice(Math.max(result, Number(draft.minimum_price)));
+      setTestError(""); setTestPrice(Math.max(result, Number(draft.minimum_price || 0)));
     } catch (err) { setTestPrice(null); setTestError(err.message || "Formula error"); }
   };
 
   const save = async () => {
     setSaving(true); setSaveMsg("");
-    if (
-      !_isPositiveNumber(draft.electricity_rate) ||
-      !_isPresent(draft.minimum_price) || Number(draft.minimum_price) < 0 ||
-      !_isPositiveNumber(draft.markup_multiplier) ||
-      !_isPresent(draft.formula)
-    ) {
-      setSaveMsg("Error: electricity rate, minimum price, markup multiplier, and formula are required.");
-      setSaving(false);
-      return;
-    }
     const payload = {
-      electricity_rate: Number(draft.electricity_rate),
-      minimum_price: Number(draft.minimum_price),
-      markup_multiplier: Number(draft.markup_multiplier),
-      formula: draft.formula,
-      updated_at: new Date().toISOString(),
+      electricity_rate: Number(draft.electricity_rate || 0), minimum_price: Number(draft.minimum_price || 0),
+      markup_multiplier: Number(draft.markup_multiplier || 1), formula: draft.formula, updated_at: new Date().toISOString(),
     };
     const { error } = await supabase.from("pricing_settings").update(payload).eq("id", "default");
     if (error) { setSaveMsg(`Error: ${error.message}`); } else { setPricingConfig({ ...payload }); setSaveMsg("Saved successfully."); testFormula(); }
@@ -1971,7 +1910,7 @@ function DeadlineBadge({ deadline }) {
   return <span style={{ fontSize: 12, color: T.textMuted }}>{label} ({diff}d)</span>;
 }
 
-function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
+function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder }) {
   const [showAdd, setShowAdd] = useState(false);
   const [editOrder, setEditOrder] = useState(null);
   const [filterStatus, setFilterStatus] = useState("All");
@@ -1979,7 +1918,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
   const [opLoading, setOpLoading] = useState(false);
   const [opError, setOpError] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
-  const emptyForm = { client_name: "", title: "", description: "", filament_id: "", printer_id: "", deadline: "", status: "", priority: "", estimated_grams: "", estimated_hours: "" };
+  const emptyForm = { client_name: "", title: "", description: "", filament_id: "", printer_id: "", deadline: "", status: "Queued", priority: "Normal", estimated_grams: "", estimated_hours: "" };
   const [form, setForm] = useState(emptyForm);
 
   const openAdd = () => { setForm(emptyForm); setEditOrder(null); setShowAdd(true); setOpError(""); };
@@ -1987,8 +1926,8 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
     setForm({
       client_name: o.client_name || "", title: o.title || "", description: o.description || "",
       filament_id: o.filament_id || "", printer_id: o.printer_id || "",
-      deadline: o.deadline || "", status: o.status || "",
-      priority: o.priority || "",
+      deadline: o.deadline || "", status: o.status || "Queued",
+      priority: o.priority || "Normal",
       estimated_grams: o.estimated_grams ?? "", estimated_hours: o.estimated_hours ?? "",
     });
     setEditOrder(o); setShowAdd(true); setOpError("");
@@ -2000,7 +1939,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
   };
 
   const saveOrder = async () => {
-    if (!form.client_name.trim() || !form.title.trim() || !form.status || !form.priority) { setOpError("Client name, title, status, and priority are required."); return; }
+    if (!form.client_name.trim() || !form.title.trim()) { setOpError("Client name and title are required."); return; }
     setOpLoading(true); setOpError("");
     const payload = {
       client_name: form.client_name.trim(), title: form.title.trim(), description: form.description,
@@ -2145,6 +2084,12 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
                       {ORDER_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
                     <div style={{ display: "flex", gap: 6 }}>
+                      {order.status !== "Done" && order.status !== "Cancelled" && (
+                        <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={async () => {
+                          await updateStatus(order.id, "Printing");
+                          startJobFromOrder({ ...order, status: "Printing" });
+                        }}>▶ Start Job</button>
+                      )}
                       <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(order)}>Edit</button>
                       <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => setConfirmDel(order)}>✕</button>
                     </div>
@@ -2201,14 +2146,12 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
               <div className="input-group">
                 <label>Status</label>
                 <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
-                  <option value="">— Select status —</option>
                   {ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}
                 </select>
               </div>
               <div className="input-group">
                 <label>Priority</label>
                 <select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}>
-                  <option value="">— Select priority —</option>
                   {PRIORITIES.map((p) => <option key={p}>{p}</option>)}
                 </select>
               </div>
@@ -2251,7 +2194,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows }) {
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>{opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setShowAdd(false)} disabled={opLoading}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || !form.status || !form.priority || opLoading}>{opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>{opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}</button>
             </div>
           </div>
         </div>
