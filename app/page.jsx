@@ -32,8 +32,6 @@ const DEFAULT_PRICING_CONFIG = {
   minimum_price: 100,
   markup_multiplier: 1.0,
   formula: "default_charged_total * markup_multiplier",
-  true_electricity_cost: null,
-  selling_electricity_cost: null,
 };
 
 function dbPrinterToInternal(row) {
@@ -137,7 +135,7 @@ function _computeEngine(job, PRINTER_DB) {
       true_cost_per_kg: trueCostKg,
       selling_price_per_kg: sellingKg > 0 ? sellingKg : trueCostKg,
       elec_kwh: elecKwh,
-      // Aliases — all defined here so formulas referencing any of them work
+      // Aliases — all defined so any formula variable works without error
       machine_rate: printerReal,
       machine_charged: printerCharged,
       filament_cost: filamentReal,
@@ -145,6 +143,13 @@ function _computeEngine(job, PRINTER_DB) {
       electricity_cost: elecReal,
       electricity_price: elecCharged,
       total_cost: totalReal,
+      // Power/wattage aliases
+      power_kw: hours > 0 ? elecKwh / hours : 0,
+      power_kwh: elecKwh,
+      watt_hours: elecKwh * 1000,
+      print_hours: hours,
+      print_grams: grams,
+      labor_cost: printerCharged,
     };
     const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, formulaVariables);
     if (formulaPrice !== null) computedChargedTotal = formulaPrice;
@@ -415,6 +420,7 @@ export default function App() {
   const [pricingConfig, setPricingConfig] = useState(DEFAULT_PRICING_CONFIG);
   const [completedJobs, setCompletedJobs] = useState([]);
   const [jobOrders, setJobOrders] = useState([]);
+  const [dbJobs, setDbJobs] = useState([]);
   const [dbLoading, setDbLoading] = useState(true);
   const [dbError, setDbError] = useState("");
 
@@ -428,11 +434,13 @@ export default function App() {
           { data: prData, error: prErr },
           { data: psData, error: psErr },
           { data: ordersData },
+          { data: jobsData },
         ] = await Promise.all([
           supabase.from("filaments").select("*").eq("active", true).order("brand"),
           supabase.from("printers").select("*").eq("active", true).order("name"),
           supabase.from("pricing_settings").select("*").eq("id", "default").single(),
           supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false }).then(r => r).catch(() => ({ data: [] })),
+          supabase.from("jobs").select("*, filaments(brand,type,color,finish), job_printer_allocations(printer_id,percentage,printers(name))").order("created_at", { ascending: false }).limit(300).then(r => r).catch(() => ({ data: [] })),
         ]);
         if (filErr) throw new Error(`Filaments: ${filErr.message}`);
         if (prErr) throw new Error(`Printers: ${prErr.message}`);
@@ -443,14 +451,13 @@ export default function App() {
         for (const row of (prData || [])) dbMap[row.id] = dbPrinterToInternal(row);
         setPrinterDB(dbMap);
         if (ordersData) setJobOrders(ordersData);
+        if (jobsData) setDbJobs(jobsData);
         if (psData) {
           setPricingConfig({
             electricity_rate: Number(psData.electricity_rate),
             minimum_price: Number(psData.minimum_price),
             markup_multiplier: Number(psData.markup_multiplier),
             formula: psData.formula,
-            true_electricity_cost: psData.true_electricity_cost != null ? Number(psData.true_electricity_cost) : null,
-            selling_electricity_cost: psData.selling_electricity_cost != null ? Number(psData.selling_electricity_cost) : null,
           });
         }
       } catch (err) {
@@ -552,6 +559,11 @@ export default function App() {
   const goNext = () => { if (stepValid()) setStep((s) => Math.min(8, s + 1)); };
   const goBack = () => { setStep((s) => Math.max(1, s - 1)); if (step <= 5) setCostResult(null); };
 
+  const reloadDbJobs = async () => {
+    const { data } = await supabase.from("jobs").select("*, filaments(brand,type,color,finish), job_printer_allocations(printer_id,percentage,printers(name))").order("created_at", { ascending: false }).limit(300);
+    if (data) setDbJobs(data);
+  };
+
   const finalizeJob = async () => {
     if (!costResult) return;
     setSaving(true);
@@ -559,24 +571,47 @@ export default function App() {
     const finalPrice = customPrice ?? costResult.totals.charged;
     try {
       const { data: jobData, error: jobErr } = await supabase.from("jobs").insert({
-        client_name: clientName, job_type: jobType, filament_id: selectedFil.id, parts,
-        total_grams: grams, total_hours: hours, charged_total: finalPrice,
-        real_total: costResult.totals.real, profit_total: costResult.totals.profit,
-        deadline: deadline || null, notes: notes || null, cost_result: costResult,
-        payment_status: "unpaid", status: "pending",
+        client_name: clientName,
+        job_type: jobType,
+        filament_id: selectedFil.id,
+        parts,
+        total_grams: Number(grams),
+        total_hours: Number(hours),
+        charged_total: finalPrice,
+        real_total: costResult.totals.real,
+        profit_total: costResult.totals.profit,
+        deadline: deadline || null,
+        notes: notes || null,
+        cost_result: costResult,
+        payment_status: "unpaid",
+        status: "pending",
       }).select().single();
       if (jobErr) throw new Error(jobErr.message);
+
       if (selectedPrinters.length > 0) {
         const allocRows = selectedPrinters.map((p) => ({ job_id: jobData.id, printer_id: p.id, percentage: p.pct }));
         const { error: allocErr } = await supabase.from("job_printer_allocations").insert(allocRows);
-        if (allocErr) throw new Error(allocErr.message);
+        if (allocErr) console.warn("Printer alloc error:", allocErr.message);
       }
-      const job = { id: jobData.id, date: new Date().toLocaleDateString(), jobType, clientName, deadline, notes, parts, grams, hours, filament: selectedFil, printers: selectedPrinters, printerDB, cost: costResult, finalPrice };
-      setCompletedJobs((prev) => [job, ...prev]);
+
+      // Mark linked job order as Done
       if (activeOrderId) {
         await supabase.from("job_orders").update({ status: "Done", updated_at: new Date().toISOString() }).eq("id", activeOrderId);
         setJobOrders((prev) => prev.map((o) => o.id === activeOrderId ? { ...o, status: "Done" } : o));
       }
+
+      // Reload jobs from DB so history/analytics survive refresh
+      await reloadDbJobs();
+
+      // Also keep in-session list for immediate receipt display
+      const job = {
+        id: jobData.id,
+        date: new Date().toLocaleDateString(),
+        jobType, clientName, deadline, notes, parts, grams, hours,
+        filament: selectedFil, printers: selectedPrinters, printerDB,
+        cost: costResult, finalPrice,
+      };
+      setCompletedJobs((prev) => [job, ...prev]);
       setShowReceipt(true);
     } catch (err) {
       setSaveError(err.message || "Failed to save job.");
@@ -703,8 +738,8 @@ export default function App() {
               onAddNew={handleAddNewOrder}
             />
           )}
-          {view === "jobs" && <JobsView jobs={completedJobs} />}
-          {view === "analytics" && <AnalyticsView jobs={completedJobs} />}
+          {view === "jobs" && <JobsView dbJobs={dbJobs} reloadDbJobs={reloadDbJobs} />}
+          {view === "analytics" && <AnalyticsView dbJobs={dbJobs} />}
           {view === "settings" && <PricingSettingsView pricingConfig={pricingConfig} setPricingConfig={setPricingConfig} />}
         </main>
       </div>
@@ -1460,7 +1495,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
 function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters }) {
   const [filEdits, setFilEdits] = useState({});
   const [printerEdits, setPrinterEdits] = useState({});
-  const [pricingDraft, setPricingDraft] = useState({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" });
+  const [pricingDraft, setPricingDraft] = useState({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
   const [saving, setSaving] = useState({ fil: false, printers: false, pricing: false });
   const [msgs, setMsgs] = useState({ fil: "", printers: "", pricing: "" });
 
@@ -1514,8 +1549,8 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
       if (pricingDraft.markup_multiplier !== "") payload.markup_multiplier = Number(pricingDraft.markup_multiplier);
       if (pricingDraft.minimum_price !== "") payload.minimum_price = Number(pricingDraft.minimum_price);
       if (pricingDraft.formula !== "") payload.formula = pricingDraft.formula;
-      if (pricingDraft.true_electricity_cost !== "") payload.true_electricity_cost = pricingDraft.true_electricity_cost === "null" ? null : Number(pricingDraft.true_electricity_cost);
-      if (pricingDraft.selling_electricity_cost !== "") payload.selling_electricity_cost = pricingDraft.selling_electricity_cost === "null" ? null : Number(pricingDraft.selling_electricity_cost);
+      // Note: true_electricity_cost and selling_electricity_cost are NOT in the DB schema
+      // They are stored in filament profiles instead (true_cost_per_kg / selling_price_per_kg)
       if (Object.keys(payload).length === 0) { setMsg("pricing", "No changes."); setSaving((s) => ({ ...s, pricing: false })); return; }
       const { error } = await supabase.from("pricing_settings").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", "default");
       if (error) throw new Error(error.message);
@@ -1525,10 +1560,8 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
         minimum_price: Number(psData.minimum_price),
         markup_multiplier: Number(psData.markup_multiplier),
         formula: psData.formula,
-        true_electricity_cost: psData.true_electricity_cost != null ? Number(psData.true_electricity_cost) : null,
-        selling_electricity_cost: psData.selling_electricity_cost != null ? Number(psData.selling_electricity_cost) : null,
       });
-      setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" });
+      setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
       setMsg("pricing", "Saved.");
     } catch (err) { setMsg("pricing", err.message || "Failed"); }
     finally { setSaving((s) => ({ ...s, pricing: false })); }
@@ -1625,9 +1658,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Pricing Settings</div>
         {[
-          { label: "Electricity Rate", sub: `Current: ₱${pricingConfig?.electricity_rate ?? "—"}/kWh`, key: "electricity_rate", unit: "₱/kWh", placeholder: String(pricingConfig?.electricity_rate ?? 0) },
-          { label: "True Electricity Cost", sub: "Actual cost you pay per kWh", key: "true_electricity_cost", unit: "₱/kWh", placeholder: "e.g. 10.50" },
-          { label: "Selling Electricity Cost", sub: "Rate charged to client per kWh", key: "selling_electricity_cost", unit: "₱/kWh", placeholder: "e.g. 18.00" },
+          { label: "Electricity Rate", sub: `Current: ₱${pricingConfig?.electricity_rate ?? "—"}/kWh (used in cost engine)`, key: "electricity_rate", unit: "₱/kWh", placeholder: String(pricingConfig?.electricity_rate ?? 0) },
           { label: "Markup Multiplier", sub: `Current: ×${pricingConfig?.markup_multiplier ?? "—"}`, key: "markup_multiplier", unit: "×", placeholder: String(pricingConfig?.markup_multiplier ?? 1) },
           { label: "Minimum Price", sub: `Current: ₱${pricingConfig?.minimum_price ?? "—"}`, key: "minimum_price", unit: "₱", placeholder: String(pricingConfig?.minimum_price ?? 0) },
         ].map((field) => (
@@ -1650,7 +1681,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
           <textarea rows={3} placeholder={pricingConfig?.formula || "formula"} value={pricingDraft.formula} onChange={(e) => onPricingChange("formula", e.target.value)} style={{ resize: "vertical", width: "100%", fontFamily: T.fontMono }} />
         </div>
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-          <button className="btn btn-ghost" onClick={() => { setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "", true_electricity_cost: "", selling_electricity_cost: "" }); setMsg("pricing", ""); }}>Reset</button>
+          <button className="btn btn-ghost" onClick={() => { setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" }); setMsg("pricing", ""); }}>Reset</button>
           <button className="btn btn-primary" onClick={savePricing} disabled={saving.pricing}>{saving.pricing ? "Saving…" : "Save Pricing"}</button>
         </div>
         <MsgBanner msg={msgs.pricing} />
@@ -1694,6 +1725,12 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
         electricity_cost: 16.8,
         electricity_price: 25,
         total_cost: 161.8,
+        power_kw: 0.14,
+        power_kwh: 0.56,
+        watt_hours: 560,
+        print_hours: 4,
+        print_grams: 100,
+        labor_cost: 150,
       };
       const result = _evaluatePricingFormula(draft.formula, testVars);
       setTestError(""); setTestPrice(Math.max(result, Number(draft.minimum_price || 0)));
@@ -1752,18 +1789,15 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
           <div className="card-title"><span className="card-title-dot" />Allowed Variables</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
             {[
-              "grams", "hours",
-              "filament_real", "filament_charged",
-              "electricity_real", "electricity_charged",
-              "printer_real", "printer_charged",
-              "real_total", "default_charged_total",
-              "markup_multiplier", "minimum_price",
-              "machine_rate", "machine_charged",
-              "filament_cost", "filament_price",
-              "electricity_cost", "electricity_price",
-              "total_cost",
+              "grams", "hours", "filament_real", "filament_charged",
+              "electricity_real", "electricity_charged", "printer_real", "printer_charged",
+              "real_total", "default_charged_total", "markup_multiplier", "minimum_price",
+              "machine_rate", "machine_charged", "filament_cost", "filament_price",
+              "electricity_cost", "electricity_price", "total_cost",
               "filament_price_per_gram", "filament_selling_per_gram",
-              "elec_kwh",
+              "true_cost_per_kg", "selling_price_per_kg",
+              "elec_kwh", "power_kw", "power_kwh", "watt_hours",
+              "print_hours", "print_grams", "labor_cost",
             ].map((v) => (
               <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>
             ))}
@@ -2095,78 +2129,214 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
   );
 }
 
-function JobsView({ jobs }) {
-  if (jobs.length === 0)
+function JobsView({ dbJobs, reloadDbJobs }) {
+  const [payingJob, setPayingJob] = useState(null);
+  const [payForm, setPayForm] = useState({ amount: "", method: "cash", reference_number: "" });
+  const [payLoading, setPayLoading] = useState(false);
+  const [payError, setPayError] = useState("");
+  const [updatingStatus, setUpdatingStatus] = useState(null);
+
+  const recordPayment = async () => {
+    if (!payingJob || !payForm.amount) return;
+    setPayLoading(true); setPayError("");
+    try {
+      const { error: payErr } = await supabase.from("payments").insert({
+        job_id: payingJob.id,
+        amount: Number(payForm.amount),
+        method: payForm.method,
+        reference_number: payForm.reference_number || null,
+      });
+      if (payErr) throw new Error(payErr.message);
+      const { error: jobErr } = await supabase.from("jobs").update({ payment_status: "paid" }).eq("id", payingJob.id);
+      if (jobErr) throw new Error(jobErr.message);
+      await reloadDbJobs();
+      setPayingJob(null); setPayForm({ amount: "", method: "cash", reference_number: "" });
+    } catch (err) { setPayError(err.message); }
+    finally { setPayLoading(false); }
+  };
+
+  const updateJobStatus = async (id, status) => {
+    setUpdatingStatus(id);
+    await supabase.from("jobs").update({ status }).eq("id", id);
+    await reloadDbJobs();
+    setUpdatingStatus(null);
+  };
+
+  if (dbJobs.length === 0)
     return (
       <div>
         <div className="page-header"><div className="page-title">Job History</div></div>
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>◷</div>
-          <div style={{ fontSize: 14, color: T.textMuted }}>No jobs completed yet</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Complete a job via New Job to see it here</div>
+          <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Complete a job via New Job to see it here — data persists after refresh</div>
         </div>
       </div>
     );
-  const total = jobs.reduce((s, j) => s + j.finalPrice, 0);
-  const totalProfit = jobs.reduce((s, j) => s + (j.cost?.totals.profit ?? 0), 0);
+
+  const total = dbJobs.reduce((s, j) => s + Number(j.charged_total || 0), 0);
+  const totalProfit = dbJobs.reduce((s, j) => s + Number(j.profit_total || 0), 0);
+  const unpaidCount = dbJobs.filter((j) => j.payment_status !== "paid").length;
+
+  const JOB_STATUSES = ["pending", "printing", "done", "cancelled"];
+  const PAYMENT_COLORS = {
+    paid: { bg: "rgba(0,229,160,0.12)", border: "rgba(0,229,160,0.3)", text: "#00E5A0" },
+    unpaid: { bg: "rgba(245,166,35,0.12)", border: "rgba(245,166,35,0.3)", text: "#F5A623" },
+  };
+
   return (
     <div>
-      <div className="page-header"><div className="page-title">Job History</div><div className="page-sub">{jobs.length} jobs this session</div></div>
-      <div className="grid2" style={{ marginBottom: 20 }}>
+      <div className="page-header"><div className="page-title">Job History</div><div className="page-sub">{dbJobs.length} total jobs · {unpaidCount} unpaid</div></div>
+      <div className="grid4" style={{ marginBottom: 20 }}>
         <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-val">₱{total.toFixed(2)}</div></div>
         <div className="stat-card"><div className="stat-label">Total Profit</div><div className="stat-val stat-profit">₱{totalProfit.toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Jobs</div><div className="stat-val">{dbJobs.length}</div></div>
+        <div className="stat-card"><div className="stat-label">Unpaid</div><div className="stat-val" style={{ color: unpaidCount > 0 ? T.warn : T.accent }}>{unpaidCount}</div></div>
       </div>
       <div className="card">
         <table className="table">
-          <thead><tr><th>ID</th><th>Date</th><th>Client</th><th>Type</th><th>Params</th><th>Revenue</th><th>Profit</th></tr></thead>
+          <thead>
+            <tr>
+              <th>ID</th><th>Date</th><th>Client</th><th>Type</th>
+              <th>Filament</th><th>Params</th><th>Revenue</th><th>Profit</th>
+              <th>Status</th><th>Payment</th><th>Actions</th>
+            </tr>
+          </thead>
           <tbody>
-            {jobs.map((j) => (
-              <tr key={j.id}>
-                <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{String(j.id).slice(0, 8).toUpperCase()}</td>
-                <td>{j.date}</td>
-                <td style={{ fontWeight: 500, color: T.text }}>{j.clientName}</td>
-                <td><span className="tag">{j.jobType}</span></td>
-                <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.grams}g · {j.hours.toFixed(2)}h</td>
-                <td style={{ fontFamily: T.fontMono, color: T.text }}>₱{j.finalPrice.toFixed(2)}</td>
-                <td style={{ fontFamily: T.fontMono, color: T.accent }}>+₱{(j.cost?.totals.profit ?? 0).toFixed(2)}</td>
-              </tr>
-            ))}
+            {dbJobs.map((j) => {
+              const pc = PAYMENT_COLORS[j.payment_status] ?? PAYMENT_COLORS.unpaid;
+              return (
+                <tr key={j.id}>
+                  <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{String(j.id).slice(0, 8).toUpperCase()}</td>
+                  <td style={{ fontSize: 11, whiteSpace: "nowrap" }}>{j.created_at ? new Date(j.created_at).toLocaleDateString() : "—"}</td>
+                  <td style={{ fontWeight: 500, color: T.text }}>{j.client_name}</td>
+                  <td><span className="tag">{j.job_type}</span></td>
+                  <td style={{ fontSize: 11, color: T.textMuted }}>
+                    {j.filaments ? `${j.filaments.brand} ${j.filaments.type} ${j.filaments.color}` : "—"}
+                  </td>
+                  <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.total_grams}g · {Number(j.total_hours).toFixed(2)}h</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.text, fontWeight: 600 }}>₱{Number(j.charged_total).toFixed(2)}</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>+₱{Number(j.profit_total).toFixed(2)}</td>
+                  <td>
+                    <select
+                      value={j.status}
+                      onChange={(e) => updateJobStatus(j.id, e.target.value)}
+                      disabled={updatingStatus === j.id}
+                      style={{ fontSize: 11, padding: "3px 6px", background: T.bgInput, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 5 }}
+                    >
+                      {JOB_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 600, background: pc.bg, border: `1px solid ${pc.border}`, color: pc.text }}>
+                      {j.payment_status || "unpaid"}
+                    </span>
+                  </td>
+                  <td>
+                    {j.payment_status !== "paid" && (
+                      <button className="btn btn-ghost" style={{ padding: "3px 9px", fontSize: 11 }} onClick={() => { setPayingJob(j); setPayForm({ amount: String(j.charged_total), method: "cash", reference_number: "" }); setPayError(""); }}>
+                        💳 Pay
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
+
+      {/* Payment modal */}
+      {payingJob && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setPayingJob(null)}>
+          <div className="modal">
+            <h3>Record Payment</h3>
+            <div style={{ marginBottom: 16, padding: "10px 14px", background: T.bgInput, borderRadius: 8, fontSize: 13 }}>
+              <strong style={{ color: T.text }}>{payingJob.client_name}</strong>
+              <span style={{ color: T.textMuted }}> · {payingJob.job_type}</span>
+              <div style={{ color: T.accent, fontFamily: T.fontMono, marginTop: 4, fontSize: 15, fontWeight: 600 }}>₱{Number(payingJob.charged_total).toFixed(2)}</div>
+            </div>
+            <div className="input-group">
+              <label>Amount (₱)</label>
+              <input type="number" min={0} step={0.01} value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} />
+            </div>
+            <div className="input-group">
+              <label>Payment Method</label>
+              <select value={payForm.method} onChange={(e) => setPayForm((f) => ({ ...f, method: e.target.value }))}>
+                {["cash", "gcash", "maya", "bank_transfer", "card", "other"].map((m) => (
+                  <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1).replace("_", " ")}</option>
+                ))}
+              </select>
+            </div>
+            <div className="input-group">
+              <label>Reference Number (optional)</label>
+              <input type="text" placeholder="e.g. GCash ref #" value={payForm.reference_number} onChange={(e) => setPayForm((f) => ({ ...f, reference_number: e.target.value }))} />
+            </div>
+            {payError && <div className="error-msg" style={{ marginBottom: 8 }}>{payError}</div>}
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setPayingJob(null)} disabled={payLoading}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={recordPayment} disabled={!payForm.amount || payLoading}>{payLoading ? "Saving…" : "Record Payment"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function AnalyticsView({ jobs }) {
-  if (jobs.length === 0)
+function AnalyticsView({ dbJobs }) {
+  if (dbJobs.length === 0)
     return (
       <div>
         <div className="page-header"><div className="page-title">Analytics</div></div>
         <div className="card" style={{ textAlign: "center", padding: "48px" }}>
-          <div style={{ fontSize: 14, color: T.textMuted }}>Complete jobs to see analytics</div>
+          <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Complete and finalize jobs to see analytics here</div>
         </div>
       </div>
     );
-  const totalRev = jobs.reduce((s, j) => s + j.finalPrice, 0);
-  const totalCost = jobs.reduce((s, j) => s + (j.cost?.totals.real ?? 0), 0);
-  const totalProfit = jobs.reduce((s, j) => s + (j.cost?.totals.profit ?? 0), 0);
-  const avgMargin = jobs.reduce((s, j) => s + (j.cost?.totals.margin ?? 0), 0) / jobs.length;
+
+  const totalRev = dbJobs.reduce((s, j) => s + Number(j.charged_total || 0), 0);
+  const totalCost = dbJobs.reduce((s, j) => s + Number(j.real_total || 0), 0);
+  const totalProfit = dbJobs.reduce((s, j) => s + Number(j.profit_total || 0), 0);
+  const avgMargin = totalRev > 0 ? (totalProfit / totalRev) * 100 : 0;
+
+  // By job type
   const byType = {};
-  jobs.forEach((j) => { byType[j.jobType] = (byType[j.jobType] || 0) + 1; });
-  const maxTypeCount = Math.max(...Object.values(byType));
-  const filamentProfit = jobs.reduce((s, j) => s + (j.cost?.filament.profit ?? 0), 0);
-  const elecProfit = jobs.reduce((s, j) => s + (j.cost?.electricity.profit ?? 0), 0);
-  const printerProfit = jobs.reduce((s, j) => s + (j.cost?.printer_usage.profit ?? 0), 0);
+  dbJobs.forEach((j) => { if (j.job_type) byType[j.job_type] = (byType[j.job_type] || 0) + 1; });
+  const maxTypeCount = Math.max(...Object.values(byType), 1);
+
+  // Profit by component from cost_result jsonb
+  const filamentProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.filament?.profit ?? 0), 0);
+  const elecProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.electricity?.profit ?? 0), 0);
+  const printerProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.printer_usage?.profit ?? 0), 0);
   const maxProfit2 = Math.max(filamentProfit, elecProfit, printerProfit, 0.01);
+
+  // Revenue over time (last 30 days)
+  const now = new Date();
+  const last30 = dbJobs.filter((j) => j.created_at && (now - new Date(j.created_at)) < 30 * 86400000);
+  const dailyRev = {};
+  last30.forEach((j) => {
+    const d = new Date(j.created_at).toLocaleDateString();
+    dailyRev[d] = (dailyRev[d] || 0) + Number(j.charged_total || 0);
+  });
+
+  // Payment stats
+  const paidCount = dbJobs.filter((j) => j.payment_status === "paid").length;
+  const unpaidRev = dbJobs.filter((j) => j.payment_status !== "paid").reduce((s, j) => s + Number(j.charged_total || 0), 0);
+
   return (
     <div>
-      <div className="page-header"><div className="page-title">Analytics</div><div className="page-sub">Profit engine summary</div></div>
+      <div className="page-header"><div className="page-title">Analytics</div><div className="page-sub">All-time · {dbJobs.length} jobs</div></div>
       <div className="grid4" style={{ marginBottom: 20 }}>
         <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-val">₱{totalRev.toFixed(0)}</div></div>
         <div className="stat-card"><div className="stat-label">Real Cost</div><div className="stat-val">₱{totalCost.toFixed(0)}</div></div>
         <div className="stat-card"><div className="stat-label">Total Profit</div><div className="stat-val stat-profit">₱{totalProfit.toFixed(0)}</div></div>
         <div className="stat-card"><div className="stat-label">Avg Margin</div><div className="stat-val">{avgMargin.toFixed(1)}%</div></div>
+      </div>
+      <div className="grid2" style={{ marginBottom: 20 }}>
+        <div className="stat-card"><div className="stat-label">Paid Jobs</div><div className="stat-val" style={{ color: T.accent }}>{paidCount} / {dbJobs.length}</div><div className="stat-sub">{dbJobs.length - paidCount} pending</div></div>
+        <div className="stat-card"><div className="stat-label">Outstanding</div><div className="stat-val" style={{ color: unpaidRev > 0 ? T.warn : T.accent }}>₱{unpaidRev.toFixed(2)}</div><div className="stat-sub">Unpaid revenue</div></div>
       </div>
       <div className="grid2">
         <div className="card">
@@ -2174,7 +2344,7 @@ function AnalyticsView({ jobs }) {
           {[["Filament", filamentProfit], ["Electricity", elecProfit], ["Printer Usage", printerProfit]].map(([label, val]) => (
             <div key={label} className="profit-bar-wrap">
               <span className="profit-bar-label">{label}</span>
-              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(val / maxProfit2) * 100}%`, background: T.accent }} /></div>
+              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(Math.max(val,0) / maxProfit2) * 100}%`, background: T.accent }} /></div>
               <span className="profit-bar-val">₱{val.toFixed(2)}</span>
             </div>
           ))}
