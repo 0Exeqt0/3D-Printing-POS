@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
+// ─── DESIGN TOKENS ───────────────────────────────────────────────────────────
 const T = {
   bg: "#0D0F14",
   bgCard: "#13161E",
@@ -23,166 +24,22 @@ const T = {
   fontSans: "'DM Sans', system-ui, sans-serif",
 };
 
-const EMPTY_PRICING_CONFIG = {
-  id: "default",
-  electricity_rate: "",
-  minimum_price: "",
-  markup_multiplier: "",
-  formula: "",
+// ─── DEFAULT PRICING CONFIG FALLBACK ─────────────────────────────────────────
+const DEFAULT_PRICING_CONFIG = {
+  electricity_rate: 12,
+  minimum_price: 100,
+  markup_multiplier: 1.0,
+  formula: "default_charged_total * markup_multiplier",
 };
 
-const JOB_TYPES = ["Standard Print", "Prototype", "Production Run", "Multicolor", "Functional Part", "Display Model"];
-const JOB_STATUSES = ["pending", "queued", "printing", "post-processing", "done", "cancelled"];
-const PAYMENT_STATUSES = ["unpaid", "partial", "paid", "refunded"];
-
-const css = `
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body, #root { background: ${T.bg}; min-height: 100vh; font-family: ${T.fontSans}; color: ${T.text}; }
-.app { display: flex; min-height: 100vh; overflow: hidden; }
-.sidebar { width: 220px; min-width: 220px; background: ${T.bgCard}; border-right: 1px solid ${T.border}; display: flex; flex-direction: column; }
-.main { flex: 1; overflow-y: auto; height: 100vh; padding: 32px; }
-.logo { padding: 24px 20px 20px; border-bottom: 1px solid ${T.border}; }
-.logo-mark { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: ${T.accent}; font-family: ${T.fontMono}; }
-.logo-name { font-size: 17px; font-weight: 600; color: ${T.text}; margin-top: 4px; }
-.nav-section { padding: 16px 12px; flex: 1; }
-.nav-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: ${T.textDim}; padding: 0 8px; margin-bottom: 8px; }
-.nav-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: ${T.textMuted}; transition: all 0.15s; margin-bottom: 2px; }
-.nav-item:hover { background: rgba(255,255,255,0.04); color: ${T.text}; }
-.nav-item.active { background: ${T.accentGlow}; color: ${T.accent}; }
-.nav-dot { width: 7px; height: 7px; border-radius: 50%; background: ${T.textDim}; }
-.nav-item.active .nav-dot { background: ${T.accent}; }
-.nav-bottom { padding: 16px 12px; border-top: 1px solid ${T.border}; }
-.page-header { margin-bottom: 28px; display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
-.page-title { font-size: 24px; font-weight: 600; color: ${T.text}; }
-.page-sub { font-size: 13px; color: ${T.textMuted}; margin-top: 4px; }
-.card { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 14px; padding: 24px; margin-bottom: 20px; }
-.card-title { font-size: 13px; font-weight: 600; color: ${T.textMuted}; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
-.card-title-dot { width: 6px; height: 6px; border-radius: 50%; background: ${T.accent}; }
-.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.grid4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
-.chip { padding: 8px 14px; border-radius: 8px; border: 1.5px solid ${T.border}; font-size: 13px; cursor: pointer; transition: all 0.15s; color: ${T.textMuted}; background: transparent; text-align: center; }
-.chip:hover { border-color: ${T.borderHi}; color: ${T.text}; }
-.chip.selected { border-color: ${T.accent}; color: ${T.accent}; background: ${T.accentGlow}; }
-.chip-printer, .filament-card { padding: 14px 16px; border-radius: 10px; border: 1.5px solid ${T.border}; cursor: pointer; transition: all 0.15s; background: ${T.bgInput}; }
-.chip-printer:hover, .filament-card:hover { border-color: ${T.borderHi}; }
-.chip-printer.selected, .filament-card.selected { border-color: ${T.accent}; background: ${T.accentGlow}; }
-.printer-name, .fil-name { font-size: 14px; font-weight: 500; color: ${T.text}; }
-.printer-meta, .fil-meta { font-size: 11px; color: ${T.textMuted}; margin-top: 3px; font-family: ${T.fontMono}; }
-.badge { padding: 3px 8px; border-radius: 6px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; display: inline-flex; align-items: center; gap: 4px; }
-.badge-accent { background: ${T.accentGlow}; color: ${T.accent}; }
-.badge-warn { background: rgba(245,166,35,0.15); color: ${T.warn}; }
-.badge-info { background: rgba(91,156,246,0.15); color: ${T.info}; }
-.badge-purple { background: rgba(155,125,255,0.15); color: ${T.purple}; }
-.badge-danger { background: rgba(255,92,92,0.15); color: ${T.danger}; }
-label { font-size: 12px; color: ${T.textMuted}; display: block; margin-bottom: 6px; letter-spacing: 0.3px; }
-input[type=text], input[type=email], input[type=password], input[type=number], input[type=date], select, textarea {
-  width: 100%; padding: 9px 12px; background: ${T.bgInput}; border: 1px solid ${T.border};
-  border-radius: 8px; color: ${T.text}; font-size: 13px; font-family: ${T.fontSans}; outline: none; transition: border 0.15s;
-}
-input:focus, select:focus, textarea:focus { border-color: ${T.accent}; }
-select option { background: ${T.bgCard}; }
-.input-group { margin-bottom: 14px; }
-.input-row { display: flex; gap: 12px; margin-bottom: 14px; }
-.input-row .input-group { flex: 1; margin-bottom: 0; }
-.btn { padding: 10px 20px; border-radius: 9px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: ${T.fontSans}; }
-.btn-primary { background: ${T.accent}; color: #000; }
-.btn-primary:hover { background: #00f5ae; transform: translateY(-1px); }
-.btn-primary:disabled { background: ${T.border}; color: ${T.textDim}; cursor: not-allowed; transform: none; }
-.btn-ghost { background: transparent; border: 1px solid ${T.border}; color: ${T.textMuted}; }
-.btn-ghost:hover { border-color: ${T.borderHi}; color: ${T.text}; }
-.btn-danger { background: transparent; border: 1px solid rgba(255,92,92,0.3); color: ${T.danger}; }
-.btn-danger:hover { background: rgba(255,92,92,0.1); }
-.btn-row { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; gap: 10px; }
-.stepper { display: flex; align-items: center; gap: 0; margin-bottom: 24px; overflow-x: auto; }
-.step-item { display: flex; align-items: center; gap: 0; }
-.step-circle { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; font-family: ${T.fontMono}; border: 1.5px solid ${T.border}; color: ${T.textDim}; background: ${T.bgCard}; transition: all 0.2s; flex-shrink: 0; }
-.step-circle.done { border-color: ${T.accentDim}; background: ${T.accentDim}; color: #000; }
-.step-circle.active { border-color: ${T.accent}; color: ${T.accent}; background: ${T.accentGlow}; box-shadow: 0 0 0 3px rgba(0,229,160,0.15); }
-.step-label { font-size: 11px; color: ${T.textDim}; margin: 0 6px; white-space: nowrap; display: none; }
-.step-label.active { color: ${T.accent}; display: block; }
-.step-connector { width: 24px; height: 1px; background: ${T.border}; flex-shrink: 0; }
-.step-connector.done { background: ${T.accentDim}; }
-.alloc-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid ${T.border}; }
-.alloc-row:last-child { border-bottom: none; }
-.alloc-name { font-size: 13px; font-weight: 500; color: ${T.text}; min-width: 160px; }
-.alloc-pct { font-family: ${T.fontMono}; font-size: 14px; color: ${T.accent}; min-width: 42px; text-align: right; }
-input[type=range] { -webkit-appearance: none; width: 100%; height: 4px; background: ${T.border}; border-radius: 2px; border: none; padding: 0; }
-input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: ${T.accent}; cursor: pointer; }
-.table { width: 100%; border-collapse: collapse; }
-.table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: ${T.textDim}; padding: 8px 12px; text-align: left; border-bottom: 1px solid ${T.border}; }
-.table td { font-size: 13px; padding: 10px 12px; border-bottom: 1px solid ${T.border}; color: ${T.textMuted}; vertical-align: top; }
-.table td:first-child { color: ${T.text}; }
-.tag { padding: 3px 8px; border-radius: 5px; font-size: 10px; font-weight: 500; background: ${T.border}; color: ${T.textMuted}; margin-right: 4px; }
-.stat-card { background: ${T.bgInput}; border: 1px solid ${T.border}; border-radius: 10px; padding: 14px 16px; }
-.stat-label { font-size: 11px; color: ${T.textMuted}; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.8px; }
-.stat-val { font-size: 22px; font-weight: 600; color: ${T.text}; font-family: ${T.fontMono}; }
-.stat-sub { font-size: 11px; color: ${T.textDim}; margin-top: 3px; }
-.receipt { background: #fff; color: #111; border-radius: 10px; padding: 28px 24px; font-family: 'Courier New', monospace; max-width: 360px; margin: 0 auto; }
-.receipt h2 { text-align: center; font-size: 15px; font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; }
-.receipt .sub { text-align: center; font-size: 11px; color: #555; margin-bottom: 16px; }
-.receipt hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
-.receipt .r-row { display: flex; justify-content: space-between; gap: 16px; font-size: 12px; margin: 4px 0; }
-.receipt .r-total { display: flex; justify-content: space-between; font-size: 14px; font-weight: 700; margin-top: 8px; }
-.error-msg { font-size: 12px; color: ${T.danger}; margin-top: 5px; }
-.validation-gate, .db-error { padding: 10px 14px; background: rgba(255,92,92,0.08); border: 1px solid rgba(255,92,92,0.2); border-radius: 8px; font-size: 12px; color: ${T.danger}; margin-bottom: 16px; }
-.notice { padding: 10px 14px; background: ${T.accentGlow}; border: 1px solid ${T.accentDim}; border-radius: 8px; font-size: 12px; color: ${T.accent}; margin-bottom: 16px; }
-.loading-screen { display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; gap: 14px; }
-.loading-spinner { width: 32px; height: 32px; border: 2px solid ${T.border}; border-top-color: ${T.accent}; border-radius: 50%; animation: spin 0.7s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 16px; padding: 28px; width: 520px; max-width: 92vw; max-height: 90vh; overflow: auto; }
-.modal h3 { font-size: 16px; font-weight: 600; margin-bottom: 20px; }
-.search-box { position: relative; }
-.search-box input { padding-left: 32px; }
-.search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: ${T.textDim}; font-size: 14px; }
-.filament-color-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
-@media (max-width: 860px) {
-  .app { display: block; padding-bottom: 76px; }
-  .main { height: auto; min-height: 100vh; padding: 16px; }
-  .sidebar { position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 80; width: 100%; min-width: 0; height: 68px; border-right: none; border-top: 1px solid ${T.border}; box-shadow: 0 -12px 30px rgba(0,0,0,0.28); }
-  .logo, .nav-label, .nav-bottom { display: none; }
-  .nav-section { width: 100%; display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; padding: 8px; }
-  .nav-item { justify-content: center; text-align: center; font-size: 10px; line-height: 1.1; padding: 8px 4px; margin: 0; border-radius: 12px; min-height: 48px; }
-  .nav-dot { display: none; }
-  .grid2, .grid3, .grid4 { grid-template-columns: 1fr !important; }
-  .input-row { flex-direction: column; gap: 0; }
-  .table { min-width: 900px; }
-  .card:has(.table) { overflow-x: auto; }
-  .btn-row { position: sticky; bottom: 78px; z-index: 20; background: linear-gradient(180deg, rgba(13,15,20,0), ${T.bg} 22%); padding-top: 18px; }
-  .page-header { display: block; }
-}
-@media print {
-  body, #root { background: #fff; }
-  .sidebar, .page-header, .btn-row, button, .no-print { display: none !important; }
-  .main { padding: 0; height: auto; }
-  .receipt { box-shadow: none; border-radius: 0; }
-}
-`;
-
-const colorMap = {
-  "Jade White": "#e8f5e9",
-  "Onyx Black": "#212121",
-  Gold: "#ffd700",
-  Clear: "#e3f2fd",
-  "Bambu Green": "#4caf50",
-  "Marble White": "#f5f5f5",
-};
-const getFilColor = (color) => colorMap[color] || "#888";
-const peso = (n) => `₱${Number(n || 0).toFixed(2)}`;
-const pct = (n) => `${Number(n || 0).toFixed(1)}%`;
-const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const isNumber = (v) => Number.isFinite(Number(v));
-const requiredNumber = (v) => isNumber(v) && Number(v) >= 0;
-
+// ─── MAP DB PRINTER ROW → internal _p shape ───────────────────────────────────
 function dbPrinterToInternal(row) {
   return {
     id: row.id,
     name: row.name,
     brand: row.brand,
     wattage: Number(row.wattage),
-    multicolor: Boolean(row.multicolor),
+    multicolor: row.multicolor,
     buildVol: row.build_volume,
     _p: {
       base: Number(row.base_rate),
@@ -193,36 +50,34 @@ function dbPrinterToInternal(row) {
   };
 }
 
-function evaluatePricingFormula(formula, variables) {
+function _evaluatePricingFormula(formula, variables) {
   const safeFormula = String(formula || "").trim();
-  if (!safeFormula) throw new Error("Pricing formula is required.");
-  if (!/^[0-9a-zA-Z_+\-*/()., %]+$/.test(safeFormula)) throw new Error("Formula contains unsupported characters.");
+  if (!safeFormula) return null;
+  if (!/^[0-9a-zA-Z_+\-*/()., %]+$/.test(safeFormula)) {
+    throw new Error("Formula contains unsupported characters.");
+  }
   const keys = Object.keys(variables);
   const values = keys.map((key) => variables[key]);
   const fn = new Function(...keys, `"use strict"; return (${safeFormula});`);
   const result = fn(...values);
-  if (!Number.isFinite(Number(result))) throw new Error("Formula did not return a valid number.");
-  return Number(result);
+  if (!Number.isFinite(result)) throw new Error("Formula did not return a valid number.");
+  return result;
 }
 
-function computeEngine({ printers, filament, grams, hours, pricingConfig }, printerDB) {
-  if (!filament || !grams || !hours || !printers?.length) return { ok: false, message: "Complete printer, filament, grams, and hours first." };
-  if (!requiredNumber(filament.true_cost_per_kg) || !requiredNumber(filament.selling_price_per_kg)) {
-    return { ok: false, message: "Selected filament needs true_cost_per_kg and selling_price_per_kg." };
-  }
-  if (!requiredNumber(pricingConfig.electricity_rate) || !requiredNumber(pricingConfig.minimum_price) || !requiredNumber(pricingConfig.markup_multiplier) || !pricingConfig.formula) {
-    return { ok: false, message: "Pricing settings are incomplete. Set id='default' in Pricing." };
-  }
+// ─── INTERNAL PRICING ENGINE ─────────────────────────────────────────────────
+function _computeEngine(job, PRINTER_DB) {
+  const { printers, filament, grams, hours, elecRate = 0.12, pricingConfig = DEFAULT_PRICING_CONFIG } = job;
+  if (!filament || !grams || !hours || !printers?.length) return null;
 
-  const g = Number(grams);
-  const h = Number(hours);
-  const filamentReal = (g / 1000) * Number(filament.true_cost_per_kg);
-  const filamentCharged = (g / 1000) * Number(filament.selling_price_per_kg);
+  const filamentReal = (grams / 1000) * filament.price_per_kg;
+  const filamentCharged = (() => {
+    const base = filamentReal;
+    const typeMulti = { PLA: 1.6, "PLA+": 1.75, Silk: 2.1, PETG: 1.85 }[filament.type] ?? 1.7;
+    const finishMulti = { matte: 1.0, glossy: 1.05, silk: 1.15, metallic: 1.1 }[filament.finish] ?? 1.0;
+    return base * typeMulti * finishMulti;
+  })();
 
-  let elecReal = 0;
-  let elecCharged = 0;
-  let printerReal = 0;
-  let printerCharged = 0;
+  let elecReal = 0, elecCharged = 0, printerReal = 0, printerCharged = 0;
   let weightedMachineRate = 0;
   let weightedPowerKw = 0;
   let weightedPrinterMultiplier = 0;
@@ -231,31 +86,32 @@ function computeEngine({ printers, filament, grams, hours, pricingConfig }, prin
   const perPrinterBreakdown = [];
 
   for (const alloc of printers) {
-    const p = printerDB[alloc.id];
+    const p = PRINTER_DB[alloc.id];
     if (!p) continue;
-    const share = Number(alloc.pct) / 100;
-    const pHours = h * share;
-    const pGrams = g * share;
-    const powerKw = p.wattage / 1000;
-    const er = powerKw * pHours * Number(pricingConfig.electricity_rate);
-    const ec = er;
-    const pr = pHours * p._p.base;
-    const pc = pr * p._p.mult * p._p.labor * p._p.eff;
+    const pct = alloc.pct / 100;
+    const pHours = hours * pct;
+    const pGrams = grams * pct;
 
-    weightedMachineRate += p._p.base * share;
-    weightedPowerKw += powerKw * share;
-    weightedPrinterMultiplier += p._p.mult * share;
-    weightedEfficiencyModifier += p._p.eff * share;
-    weightedLaborFactor += p._p.labor * share;
+    weightedMachineRate += p._p.base * pct;
+    weightedPowerKw += (p.wattage / 1000) * pct;
+    weightedPrinterMultiplier += p._p.mult * pct;
+    weightedEfficiencyModifier += p._p.eff * pct;
+    weightedLaborFactor += p._p.labor * pct;
+
+    const er = (p.wattage / 1000) * pHours * elecRate;
+    const ec = er * p._p.eff * (p.multicolor ? 1.08 : 1.0);
+    const pr = pHours * p._p.base;
+    const pc = pr * p._p.mult * p._p.labor;
 
     elecReal += er;
     elecCharged += ec;
     printerReal += pr;
     printerCharged += pc;
+
     perPrinterBreakdown.push({
       id: p.id,
       name: p.name,
-      pct: Number(alloc.pct),
+      pct: alloc.pct,
       hours: +pHours.toFixed(2),
       grams: +pGrams.toFixed(1),
       elec: { real: +er.toFixed(2), charged: +ec.toFixed(2) },
@@ -265,13 +121,13 @@ function computeEngine({ printers, filament, grams, hours, pricingConfig }, prin
 
   const totalReal = filamentReal + elecReal + printerReal;
   const defaultChargedTotal = filamentCharged + elecCharged + printerCharged;
-  let computedChargedTotal = defaultChargedTotal;
   let formulaError = "";
+  let computedChargedTotal = defaultChargedTotal;
 
   try {
-    computedChargedTotal = evaluatePricingFormula(pricingConfig.formula, {
-      grams: g,
-      hours: h,
+    const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, {
+      grams,
+      hours,
       filament_real: filamentReal,
       filament_charged: filamentCharged,
       electricity_real: elecReal,
@@ -280,238 +136,533 @@ function computeEngine({ printers, filament, grams, hours, pricingConfig }, prin
       printer_charged: printerCharged,
       real_total: totalReal,
       default_charged_total: defaultChargedTotal,
+      filament_price_per_gram: Number(filament.selling_price_per_kg ?? filament.price_per_kg ?? 0) / 1000,
       machine_rate: weightedMachineRate,
       power_kw: weightedPowerKw,
-      electricity_rate: Number(pricingConfig.electricity_rate),
-      printer_multiplier: weightedPrinterMultiplier,
-      efficiency_modifier: weightedEfficiencyModifier,
-      labor_factor: weightedLaborFactor,
-      markup_multiplier: Number(pricingConfig.markup_multiplier),
-      minimum_price: Number(pricingConfig.minimum_price),
+      electricity_rate: Number(elecRate || 0),
+      printer_multiplier: weightedPrinterMultiplier || 1,
+      efficiency_modifier: weightedEfficiencyModifier || 1,
+      labor_factor: weightedLaborFactor || 1,
+      markup_multiplier: Number(pricingConfig.markup_multiplier || 1),
+      minimum_price: Number(pricingConfig.minimum_price || 0),
     });
+    if (formulaPrice !== null) computedChargedTotal = formulaPrice;
   } catch (err) {
-    formulaError = err.message || "Formula error.";
+    formulaError = err.message || "Formula error. Using default engine price.";
   }
 
-  if (formulaError) return { ok: false, message: formulaError };
-
-  const totalCharged = Math.max(computedChargedTotal, Number(pricingConfig.minimum_price));
+  const totalCharged = Math.max(computedChargedTotal, Number(pricingConfig.minimum_price || 0));
   const profit = totalCharged - totalReal;
   const margin = totalCharged > 0 ? (profit / totalCharged) * 100 : 0;
-  const printerList = Object.values(printerDB);
-  const lowestCost = printerList.length ? printerList.reduce((a, b) => (a._p.base < b._p.base ? a : b)).name : "—";
-  const fastest = printerList.length ? printerList.reduce((a, b) => (a._p.eff > b._p.eff ? a : b)).name : "—";
-  const highestProfit = printerList.length ? printerList.reduce((a, b) => (a._p.mult > b._p.mult ? a : b)).name : "—";
+
+  // Build recommendation from dynamic printer list
+  const printerList = Object.values(PRINTER_DB);
+  const lowestCost = printers.length === 1
+    ? PRINTER_DB[printers[0].id]?.name
+    : (printerList.reduce((a, b) => a._p.base < b._p.base ? a : b)?.name ?? "—");
+  const fastest = printerList.reduce((a, b) => a._p.eff > b._p.eff ? a : b)?.name ?? "—";
+  const highestProfit = printerList.reduce((a, b) => a._p.mult > b._p.mult ? a : b)?.name ?? "—";
 
   return {
-    ok: true,
-    filament: { real: +filamentReal.toFixed(2), charged: +filamentCharged.toFixed(2), profit: +(filamentCharged - filamentReal).toFixed(2) },
-    electricity: { real: +elecReal.toFixed(2), charged: +elecCharged.toFixed(2), profit: +(elecCharged - elecReal).toFixed(2) },
-    printer_usage: { real: +printerReal.toFixed(2), charged: +printerCharged.toFixed(2), profit: +(printerCharged - printerReal).toFixed(2) },
-    totals: { real: +totalReal.toFixed(2), charged: +totalCharged.toFixed(2), profit: +profit.toFixed(2), margin: +margin.toFixed(1) },
+    filament: {
+      real: +filamentReal.toFixed(2),
+      charged: +filamentCharged.toFixed(2),
+      profit: +(filamentCharged - filamentReal).toFixed(2),
+    },
+    electricity: {
+      real: +elecReal.toFixed(2),
+      charged: +elecCharged.toFixed(2),
+      profit: +(elecCharged - elecReal).toFixed(2),
+    },
+    printer_usage: {
+      real: +printerReal.toFixed(2),
+      charged: +printerCharged.toFixed(2),
+      profit: +(printerCharged - printerReal).toFixed(2),
+    },
+    totals: {
+      real: +totalReal.toFixed(2),
+      charged: +totalCharged.toFixed(2),
+      profit: +profit.toFixed(2),
+      margin: +margin.toFixed(1),
+    },
     per_printer: perPrinterBreakdown,
-    formula_error: "",
+    formula_error: formulaError,
     recommendation: { lowest_cost: lowestCost, fastest, highest_profit: highestProfit },
   };
 }
 
-function statusBadge(status) {
-  if (status === "done" || status === "paid") return "badge badge-accent";
-  if (status === "printing" || status === "partial") return "badge badge-warn";
-  if (status === "cancelled" || status === "refunded") return "badge badge-danger";
-  if (status === "post-processing") return "badge badge-purple";
-  return "badge badge-info";
+// ─── HELPERS ──────────────────────────────────────────────────────────────────
+const uid = () => Math.random().toString(36).slice(2, 8);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// ─── STEPS CONFIG ─────────────────────────────────────────────────────────────
+const STEPS = [
+  { id: 1, label: "Job Type" },
+  { id: 2, label: "Printers" },
+  { id: 3, label: "Filament" },
+  { id: 4, label: "Parameters" },
+  { id: 5, label: "Cost Engine" },
+  { id: 6, label: "Pricing" },
+  { id: 7, label: "Metadata" },
+  { id: 8, label: "Confirm" },
+];
+
+const JOB_TYPES = ["Standard Print", "Prototype", "Production Run", "Multicolor", "Functional Part", "Display Model"];
+
+// ─── STYLES ───────────────────────────────────────────────────────────────────
+const css = `
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body, #root { background: ${T.bg}; min-height: 100vh; font-family: ${T.fontSans}; color: ${T.text}; }
+.app { display: flex; height: 100vh; overflow: hidden; }
+.sidebar { width: 220px; min-width: 220px; background: ${T.bgCard}; border-right: 1px solid ${T.border}; display: flex; flex-direction: column; }
+.main { flex: 1; overflow-y: auto; padding: 32px; }
+.logo { padding: 24px 20px 20px; border-bottom: 1px solid ${T.border}; }
+.logo-mark { font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: ${T.accent}; font-family: ${T.fontMono}; }
+.logo-name { font-size: 17px; font-weight: 600; color: ${T.text}; margin-top: 4px; }
+.nav-section { padding: 16px 12px; flex: 1; }
+.nav-label { font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: ${T.textDim}; padding: 0 8px; margin-bottom: 8px; }
+.nav-item { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; cursor: pointer; font-size: 13px; color: ${T.textMuted}; transition: all 0.15s; margin-bottom: 2px; }
+.nav-item:hover { background: rgba(255,255,255,0.04); color: ${T.text}; }
+.nav-item.active { background: ${T.accentGlow}; color: ${T.accent}; }
+.nav-dot { width: 7px; height: 7px; border-radius: 50%; background: ${T.textDim}; }
+.nav-item.active .nav-dot { background: ${T.accent}; }
+.stepper { display: flex; align-items: center; gap: 0; margin-bottom: 32px; }
+.step-item { display: flex; align-items: center; gap: 0; }
+.step-circle { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; font-family: ${T.fontMono}; border: 1.5px solid ${T.border}; color: ${T.textDim}; background: ${T.bgCard}; transition: all 0.2s; flex-shrink: 0; }
+.step-circle.done { border-color: ${T.accentDim}; background: ${T.accentDim}; color: #000; }
+.step-circle.active { border-color: ${T.accent}; color: ${T.accent}; background: ${T.accentGlow}; box-shadow: 0 0 0 3px rgba(0,229,160,0.15); }
+.step-label { font-size: 11px; color: ${T.textDim}; margin: 0 6px; white-space: nowrap; display: none; }
+.step-label.active { color: ${T.accent}; display: block; }
+.step-connector { width: 24px; height: 1px; background: ${T.border}; flex-shrink: 0; }
+.step-connector.done { background: ${T.accentDim}; }
+.card { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 14px; padding: 24px; margin-bottom: 20px; }
+.card-title { font-size: 13px; font-weight: 600; color: ${T.textMuted}; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+.card-title-dot { width: 6px; height: 6px; border-radius: 50%; background: ${T.accent}; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; }
+.chip { padding: 8px 14px; border-radius: 8px; border: 1.5px solid ${T.border}; font-size: 13px; cursor: pointer; transition: all 0.15s; color: ${T.textMuted}; background: transparent; text-align: center; }
+.chip:hover { border-color: ${T.borderHi}; color: ${T.text}; }
+.chip.selected { border-color: ${T.accent}; color: ${T.accent}; background: ${T.accentGlow}; }
+.chip-printer { padding: 14px 16px; border-radius: 10px; border: 1.5px solid ${T.border}; cursor: pointer; transition: all 0.15s; background: ${T.bgInput}; }
+.chip-printer:hover { border-color: ${T.borderHi}; }
+.chip-printer.selected { border-color: ${T.accent}; background: ${T.accentGlow}; }
+.printer-name { font-size: 14px; font-weight: 500; color: ${T.text}; }
+.printer-meta { font-size: 11px; color: ${T.textMuted}; margin-top: 3px; font-family: ${T.fontMono}; }
+.badge { padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 600; letter-spacing: 0.5px; }
+.badge-accent { background: ${T.accentGlow}; color: ${T.accent}; }
+.badge-warn { background: rgba(245,166,35,0.15); color: ${T.warn}; }
+.badge-info { background: rgba(91,156,246,0.15); color: ${T.info}; }
+.badge-purple { background: rgba(155,125,255,0.15); color: ${T.purple}; }
+label { font-size: 12px; color: ${T.textMuted}; display: block; margin-bottom: 6px; letter-spacing: 0.3px; }
+input[type=text], input[type=number], input[type=date], select, textarea {
+  width: 100%; padding: 9px 12px; background: ${T.bgInput}; border: 1px solid ${T.border};
+  border-radius: 8px; color: ${T.text}; font-size: 13px; font-family: ${T.fontSans};
+  outline: none; transition: border 0.15s;
+}
+input:focus, select:focus, textarea:focus { border-color: ${T.accent}; }
+input[type=range] { -webkit-appearance: none; width: 100%; height: 4px; background: ${T.border}; border-radius: 2px; border: none; padding: 0; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: ${T.accent}; cursor: pointer; }
+.input-group { margin-bottom: 14px; }
+.input-row { display: flex; gap: 12px; margin-bottom: 14px; }
+.input-row .input-group { flex: 1; margin-bottom: 0; }
+.input-addon { display: flex; align-items: center; }
+.input-suffix { padding: 9px 10px; background: ${T.bgInput}; border: 1px solid ${T.border}; border-left: none; border-radius: 0 8px 8px 0; font-size: 12px; color: ${T.textMuted}; white-space: nowrap; }
+.input-prefix { padding: 9px 10px; background: ${T.bgInput}; border: 1px solid ${T.border}; border-right: none; border-radius: 8px 0 0 8px; font-size: 12px; color: ${T.textMuted}; }
+.input-addon input { border-radius: 0; }
+.slider-row { display: flex; align-items: center; gap: 12px; }
+.slider-val { font-family: ${T.fontMono}; font-size: 13px; color: ${T.accent}; min-width: 48px; text-align: right; }
+.btn { padding: 10px 20px; border-radius: 9px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: ${T.fontSans}; }
+.btn-primary { background: ${T.accent}; color: #000; }
+.btn-primary:hover { background: #00f5ae; transform: translateY(-1px); }
+.btn-primary:disabled { background: ${T.border}; color: ${T.textDim}; cursor: not-allowed; transform: none; }
+.btn-ghost { background: transparent; border: 1px solid ${T.border}; color: ${T.textMuted}; }
+.btn-ghost:hover { border-color: ${T.borderHi}; color: ${T.text}; }
+.btn-danger { background: transparent; border: 1px solid rgba(255,92,92,0.3); color: ${T.danger}; }
+.btn-danger:hover { background: rgba(255,92,92,0.1); }
+.btn-row { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; }
+.stat-card { background: ${T.bgInput}; border: 1px solid ${T.border}; border-radius: 10px; padding: 14px 16px; }
+.stat-label { font-size: 11px; color: ${T.textMuted}; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.8px; }
+.stat-val { font-size: 22px; font-weight: 600; color: ${T.text}; font-family: ${T.fontMono}; }
+.stat-sub { font-size: 11px; color: ${T.textDim}; margin-top: 3px; }
+.stat-profit { color: ${T.accent}; }
+.cost-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid ${T.border}; }
+.cost-row:last-child { border-bottom: none; }
+.cost-name { font-size: 13px; color: ${T.textMuted}; }
+.cost-real { font-size: 13px; color: ${T.textDim}; font-family: ${T.fontMono}; }
+.cost-charged { font-size: 13px; font-weight: 500; color: ${T.text}; font-family: ${T.fontMono}; }
+.cost-profit { font-size: 12px; color: ${T.accent}; font-family: ${T.fontMono}; text-align: right; }
+.progress-bar { height: 5px; border-radius: 3px; background: ${T.border}; overflow: hidden; margin-top: 8px; }
+.progress-fill { height: 100%; border-radius: 3px; background: ${T.accent}; transition: width 0.5s ease; }
+.filament-card { background: ${T.bgInput}; border: 1.5px solid ${T.border}; border-radius: 10px; padding: 13px 15px; cursor: pointer; transition: all 0.15s; }
+.filament-card:hover { border-color: ${T.borderHi}; }
+.filament-card.selected { border-color: ${T.accent}; background: ${T.accentGlow}; }
+.filament-color-dot { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+.fil-name { font-size: 13px; font-weight: 500; color: ${T.text}; }
+.fil-meta { font-size: 11px; color: ${T.textMuted}; margin-top: 2px; }
+.alloc-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid ${T.border}; }
+.alloc-row:last-child { border-bottom: none; }
+.alloc-name { font-size: 13px; font-weight: 500; color: ${T.text}; min-width: 160px; }
+.alloc-pct { font-family: ${T.fontMono}; font-size: 14px; color: ${T.accent}; min-width: 42px; text-align: right; }
+.tag { padding: 3px 8px; border-radius: 5px; font-size: 10px; font-weight: 500; background: ${T.border}; color: ${T.textMuted}; margin-right: 4px; }
+.receipt { background: #fff; color: #111; border-radius: 10px; padding: 28px 24px; font-family: 'Courier New', monospace; max-width: 360px; margin: 0 auto; }
+.receipt h2 { text-align: center; font-size: 15px; font-weight: 700; letter-spacing: 1px; margin-bottom: 4px; }
+.receipt .sub { text-align: center; font-size: 11px; color: #555; margin-bottom: 16px; }
+.receipt hr { border: none; border-top: 1px dashed #ccc; margin: 12px 0; }
+.receipt .r-row { display: flex; justify-content: space-between; font-size: 12px; margin: 4px 0; }
+.receipt .r-total { display: flex; justify-content: space-between; font-size: 14px; font-weight: 700; margin-top: 8px; }
+.receipt .r-center { text-align: center; font-size: 11px; color: #888; margin-top: 12px; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.modal { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 16px; padding: 28px; width: 480px; max-width: 90vw; }
+.modal h3 { font-size: 16px; font-weight: 600; margin-bottom: 20px; }
+.page-header { margin-bottom: 28px; }
+.page-title { font-size: 24px; font-weight: 600; color: ${T.text}; }
+.page-sub { font-size: 13px; color: ${T.textMuted}; margin-top: 4px; }
+.error-msg { font-size: 12px; color: ${T.danger}; margin-top: 5px; }
+.validation-gate { padding: 10px 14px; background: rgba(255,92,92,0.08); border: 1px solid rgba(255,92,92,0.2); border-radius: 8px; font-size: 12px; color: ${T.danger}; margin-top: 12px; }
+.nav-bottom { padding: 16px 12px; border-top: 1px solid ${T.border}; }
+.inv-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.search-box { position: relative; }
+.search-box input { padding-left: 32px; }
+.search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: ${T.textDim}; font-size: 14px; }
+.table { width: 100%; border-collapse: collapse; }
+.table th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: ${T.textDim}; padding: 8px 12px; text-align: left; border-bottom: 1px solid ${T.border}; }
+.table td { font-size: 13px; padding: 10px 12px; border-bottom: 1px solid ${T.border}; color: ${T.textMuted}; }
+.table td:first-child { color: ${T.text}; }
+.table tr:last-child td { border-bottom: none; }
+.alloc-total { font-size: 12px; color: ${T.textDim}; margin-top: 8px; }
+.alloc-total span { color: ${T.accent}; font-family: ${T.fontMono}; }
+.rec-card { background: ${T.bgInput}; border: 1px solid ${T.border}; border-radius: 10px; padding: 14px 16px; }
+.rec-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: ${T.textDim}; margin-bottom: 6px; }
+.rec-val { font-size: 14px; font-weight: 500; color: ${T.accent}; }
+.profit-bar-wrap { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+.profit-bar-label { font-size: 12px; color: ${T.textMuted}; min-width: 90px; }
+.profit-bar-track { flex: 1; height: 6px; background: ${T.border}; border-radius: 3px; overflow: hidden; }
+.profit-bar-fill { height: 100%; border-radius: 3px; }
+.profit-bar-val { font-size: 12px; font-family: ${T.fontMono}; color: ${T.accent}; min-width: 52px; text-align: right; }
+.confirm-check { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; border-bottom: 1px solid ${T.border}; }
+.confirm-check:last-child { border-bottom: none; }
+.check-icon { color: ${T.accent}; font-size: 14px; margin-top: 1px; flex-shrink: 0; }
+.check-label { font-size: 12px; color: ${T.textMuted}; }
+.check-val { font-size: 13px; color: ${T.text}; font-weight: 500; margin-top: 2px; }
+.tab-row { display: flex; gap: 4px; margin-bottom: 24px; }
+.tab { padding: 7px 14px; border-radius: 7px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid ${T.border}; color: ${T.textMuted}; background: transparent; transition: all 0.15s; }
+.tab.active { background: ${T.accentGlow}; border-color: ${T.accent}; color: ${T.accent}; }
+select option { background: ${T.bgCard}; }
+.loading-screen { display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; gap: 14px; }
+.loading-spinner { width: 32px; height: 32px; border: 2px solid ${T.border}; border-top-color: ${T.accent}; border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.db-error { padding: 20px 24px; background: rgba(255,92,92,0.08); border: 1px solid rgba(255,92,92,0.2); border-radius: 10px; font-size: 13px; color: ${T.danger}; margin-bottom: 16px; }
+
+@media (max-width: 860px) {
+  body, #root { min-height: 100dvh; }
+  .app { display: block; height: auto; min-height: 100dvh; overflow: visible; padding-bottom: 76px; }
+  .sidebar { position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 80; width: 100%; min-width: 0; height: 68px; border-right: none; border-top: 1px solid ${T.border}; flex-direction: row; box-shadow: 0 -12px 30px rgba(0,0,0,0.28); }
+  .logo, .nav-label, .nav-bottom { display: none; }
+  .nav-section { width: 100%; display: grid; grid-template-columns: repeat(5, 1fr); gap: 4px; padding: 8px; }
+  .nav-item { justify-content: center; text-align: center; font-size: 10px; line-height: 1.1; padding: 8px 4px; margin: 0; border-radius: 12px; min-height: 48px; }
+  .nav-dot { display: none; }
+  .main { padding: 16px; overflow: visible; }
+  .page-title { font-size: 22px; }
+  .page-header { margin-bottom: 18px; }
+  .stepper { overflow-x: auto; padding-bottom: 8px; margin-bottom: 18px; scrollbar-width: none; }
+  .stepper::-webkit-scrollbar { display: none; }
+  .step-circle { width: 30px; height: 30px; }
+  .step-connector { width: 14px; }
+  .card { padding: 16px; border-radius: 18px; margin-bottom: 14px; }
+  .grid2, .grid3, .grid4 { grid-template-columns: 1fr !important; }
+  .input-row { flex-direction: column; gap: 0; }
+  .btn-row { position: sticky; bottom: 78px; z-index: 20; background: linear-gradient(180deg, rgba(13,15,20,0), ${T.bg} 22%); padding-top: 18px; gap: 10px; }
+  .btn-row .btn { min-height: 44px; }
+  .filament-card, .chip-printer, .chip { border-radius: 14px; }
+  .table { min-width: 720px; }
+  .card:has(.table) { overflow-x: auto; }
+  .modal-overlay { align-items: flex-end; }
+  .modal { width: 100%; max-width: none; border-radius: 20px 20px 0 0; padding: 22px; }
+  .receipt { max-width: 100%; }
 }
 
-function setupMissing({ printers, filaments, pricingConfig }) {
-  const issues = [];
-  if (!printers.length) issues.push("Add at least one printer.");
-  if (!filaments.length) issues.push("Add at least one active filament.");
-  if (!pricingConfig?.formula) issues.push("Create pricing_settings row with id='default'.");
-  if (!requiredNumber(pricingConfig?.electricity_rate)) issues.push("Set electricity_rate.");
-  if (!requiredNumber(pricingConfig?.minimum_price)) issues.push("Set minimum_price.");
-  if (!requiredNumber(pricingConfig?.markup_multiplier)) issues.push("Set markup_multiplier.");
-  return issues;
+@media print {
+  body, #root { background: #fff; }
+  .sidebar, .page-header, .btn-row, button { display: none !important; }
+  .main { padding: 0; }
+  .receipt { box-shadow: none; border-radius: 0; }
+}
+`;
+
+// ─── COLOR MAP FOR FILAMENT DOTS ──────────────────────────────────────────────
+const colorMap = {
+  "Jade White": "#e8f5e9", "Onyx Black": "#212121", Gold: "#ffd700",
+  Clear: "#e3f2fd", "Bambu Green": "#4caf50", "Marble White": "#f5f5f5",
+};
+const getFilColor = (color) => colorMap[color] || "#888";
+
+function normalizeJobRow(row, { filaments = [], allocations = [], printerDB = {} } = {}) {
+  const filament = filaments.find((f) => f.id === row.filament_id) || null;
+  const jobAllocations = allocations
+    .filter((a) => a.job_id === row.id)
+    .map((a) => ({ id: a.printer_id, pct: Number(a.percentage || 0) }));
+  const cost = row.cost_result || {
+    totals: {
+      real: Number(row.real_total || 0),
+      charged: Number(row.charged_total || 0),
+      profit: Number(row.profit_total || 0),
+      margin: Number(row.charged_total || 0) > 0 ? (Number(row.profit_total || 0) / Number(row.charged_total || 1)) * 100 : 0,
+    },
+    filament: { real: 0, charged: 0, profit: 0 },
+    electricity: { real: 0, charged: 0, profit: 0 },
+    printer_usage: { real: 0, charged: 0, profit: 0 },
+  };
+
+  return {
+    id: row.id,
+    date: row.created_at ? new Date(row.created_at).toLocaleDateString() : "—",
+    createdAt: row.created_at,
+    jobType: row.job_type || "—",
+    clientName: row.client_name || "—",
+    deadline: row.deadline || "",
+    notes: row.notes || "",
+    parts: row.parts || "",
+    grams: Number(row.total_grams || 0),
+    hours: Number(row.total_hours || 0),
+    filament,
+    printers: jobAllocations,
+    printerDB,
+    cost,
+    finalPrice: Number(row.charged_total || 0),
+    status: row.status || "pending",
+    paymentStatus: row.payment_status || "unpaid",
+  };
 }
 
+// ─── MAIN APP ────────────────────────────────────────────────────────────────
 export default function App() {
   const [view, setView] = useState("pos");
   const [step, setStep] = useState(1);
-  const [session, setSession] = useState(null);
-  const [authEmail, setAuthEmail] = useState("");
-  const [authPassword, setAuthPassword] = useState("");
-  const [authError, setAuthError] = useState("");
 
+  // ── DB-driven state ──
   const [filaments, setFilaments] = useState([]);
-  const [printerRows, setPrinterRows] = useState([]);
-  const [printerDB, setPrinterDB] = useState({});
-  const [pricingConfig, setPricingConfig] = useState(EMPTY_PRICING_CONFIG);
-  const [jobs, setJobs] = useState([]);
+  const [printerDB, setPrinterDB] = useState({});   // { [id]: internalPrinter }
+  const [printerRows, setPrinterRows] = useState([]); // raw DB rows for display
+  const [pricingConfig, setPricingConfig] = useState(DEFAULT_PRICING_CONFIG);
+  const [completedJobs, setCompletedJobs] = useState([]);
   const [dbLoading, setDbLoading] = useState(true);
   const [dbError, setDbError] = useState("");
 
+  // ── Load all DB data on mount ──
+  useEffect(() => {
+    async function loadAll() {
+      setDbLoading(true);
+      setDbError("");
+      try {
+        const [
+          { data: filData, error: filErr },
+          { data: prData, error: prErr },
+          { data: psData, error: psErr },
+          { data: jobData, error: jobErr },
+          { data: allocData, error: allocErr },
+        ] = await Promise.all([
+          supabase.from("filaments").select("*").eq("active", true).order("brand"),
+          supabase.from("printers").select("*").eq("active", true).order("name"),
+          supabase.from("pricing_settings").select("*").eq("id", "default").single(),
+          supabase.from("jobs").select("*").order("created_at", { ascending: false }),
+          supabase.from("job_printer_allocations").select("*"),
+        ]);
+        if (filErr) throw new Error(`Filaments: ${filErr.message}`);
+        if (prErr) throw new Error(`Printers: ${prErr.message}`);
+        if (psErr && psErr.code !== "PGRST116") throw new Error(`Pricing: ${psErr.message}`);
+        if (jobErr) throw new Error(`Jobs: ${jobErr.message}`);
+        if (allocErr) throw new Error(`Printer allocations: ${allocErr.message}`);
+
+        setFilaments(filData || []);
+        setPrinterRows(prData || []);
+
+        // Build the internal lookup map from DB rows
+        const dbMap = {};
+        for (const row of (prData || [])) {
+          dbMap[row.id] = dbPrinterToInternal(row);
+        }
+        setPrinterDB(dbMap);
+        setCompletedJobs((jobData || []).map((row) => normalizeJobRow(row, { filaments: filData || [], allocations: allocData || [], printerDB: dbMap })));
+
+        if (psData) {
+          setPricingConfig({
+            electricity_rate: Number(psData.electricity_rate),
+            minimum_price: Number(psData.minimum_price),
+            markup_multiplier: Number(psData.markup_multiplier),
+            formula: psData.formula,
+          });
+        }
+      } catch (err) {
+        setDbError(err.message || "Failed to load data from database.");
+      } finally {
+        setDbLoading(false);
+      }
+    }
+    loadAll();
+  }, []);
+
+  // ── Reload filaments helper (used after inventory edits) ──
+  const reloadFilaments = useCallback(async () => {
+    const { data, error } = await supabase.from("filaments").select("*").order("brand");
+    if (!error) setFilaments(data || []);
+  }, []);
+
+  const reloadJobs = useCallback(async () => {
+    const [{ data: jobData, error: jobErr }, { data: allocData, error: allocErr }] = await Promise.all([
+      supabase.from("jobs").select("*").order("created_at", { ascending: false }),
+      supabase.from("job_printer_allocations").select("*"),
+    ]);
+    if (jobErr || allocErr) {
+      setDbError(jobErr?.message || allocErr?.message || "Failed to load jobs.");
+      return;
+    }
+    setCompletedJobs((jobData || []).map((row) => normalizeJobRow(row, { filaments, allocations: allocData || [], printerDB })));
+  }, [filaments, printerDB]);
+
+  // Job state
   const [jobType, setJobType] = useState("");
   const [selectedPrinters, setSelectedPrinters] = useState([]);
   const [selectedFil, setSelectedFil] = useState(null);
-  const [grams, setGrams] = useState("");
-  const [hours, setHours] = useState("");
+  const [grams, setGrams] = useState(50);
+  const [hours, setHours] = useState(3);
   const [costResult, setCostResult] = useState(null);
-  const [customPrice, setCustomPrice] = useState("");
+  const [customPrice, setCustomPrice] = useState(null);
   const [clientName, setClientName] = useState("");
   const [deadline, setDeadline] = useState("");
   const [notes, setNotes] = useState("");
   const [parts, setParts] = useState("");
   const [showReceipt, setShowReceipt] = useState(false);
-  const [receiptJob, setReceiptJob] = useState(null);
   const [filSearch, setFilSearch] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const loadAll = useCallback(async () => {
-    setDbLoading(true);
-    setDbError("");
-    try {
-      const [filRes, prRes, psRes, jobsRes] = await Promise.all([
-        supabase.from("filaments").select("*").eq("active", true).order("brand"),
-        supabase.from("printers").select("*").eq("active", true).order("name"),
-        supabase.from("pricing_settings").select("*").eq("id", "default").maybeSingle(),
-        supabase
-          .from("jobs")
-          .select("*, filaments(*), job_printer_allocations(*, printers(*))")
-          .order("created_at", { ascending: false }),
-      ]);
-      if (filRes.error) throw new Error(`Filaments: ${filRes.error.message}`);
-      if (prRes.error) throw new Error(`Printers: ${prRes.error.message}`);
-      if (psRes.error) throw new Error(`Pricing: ${psRes.error.message}`);
-      if (jobsRes.error) throw new Error(`Jobs: ${jobsRes.error.message}`);
-
-      setFilaments(filRes.data || []);
-      setPrinterRows(prRes.data || []);
-      const dbMap = {};
-      for (const row of prRes.data || []) dbMap[row.id] = dbPrinterToInternal(row);
-      setPrinterDB(dbMap);
-      setPricingConfig(psRes.data || EMPTY_PRICING_CONFIG);
-      setJobs(jobsRes.data || []);
-    } catch (err) {
-      setDbError(err.message || "Failed to load data from database.");
-    } finally {
-      setDbLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session || null);
-      setDbLoading(false);
-    });
-    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => setSession(nextSession));
-    return () => data.subscription.unsubscribe();
-  }, []);
-
-  useEffect(() => {
-    if (session) loadAll();
-  }, [session, loadAll]);
-
-  const activeFilaments = useMemo(
-    () => filaments.filter((f) => f.active && (!filSearch || `${f.brand} ${f.type} ${f.color} ${f.finish}`.toLowerCase().includes(filSearch.toLowerCase()))),
-    [filaments, filSearch]
-  );
-
+  // Printer allocation helpers
   const togglePrinter = (id) => {
-    setSelectedPrinters((prev) => {
-      const has = prev.find((p) => p.id === id);
-      if (has) return rebalance(prev.filter((p) => p.id !== id));
+    setSelectedPrinters(prev => {
+      const has = prev.find(p => p.id === id);
+      if (has) return rebalance(prev.filter(p => p.id !== id));
       return rebalance([...prev, { id, pct: 100 }]);
     });
   };
-
   const rebalance = (list) => {
-    if (!list.length) return [];
+    if (list.length === 0) return [];
     const eq = Math.floor(100 / list.length);
     const rem = 100 - eq * list.length;
     return list.map((p, i) => ({ ...p, pct: eq + (i === 0 ? rem : 0) }));
   };
-
   const setPrinterPct = (id, val) => {
-    setSelectedPrinters((prev) => {
-      const idx = prev.findIndex((p) => p.id === id);
+    setSelectedPrinters(prev => {
+      const idx = prev.findIndex(p => p.id === id);
       if (idx < 0 || prev.length < 2) return prev;
-      const next = prev.map((p) => ({ ...p }));
-      const delta = Number(val) - next[idx].pct;
-      next[idx].pct = Number(val);
-      const others = next.filter((_, i) => i !== idx);
+      const newList = prev.map(p => ({ ...p }));
+      const delta = val - newList[idx].pct;
+      newList[idx].pct = val;
+      const others = newList.filter((_, i) => i !== idx);
       const total = others.reduce((s, p) => s + p.pct, 0);
-      if (total > 0) others.forEach((p) => { p.pct = clamp(Math.round(p.pct - delta * (p.pct / total)), 0, 100); });
-      const sum = next.reduce((s, p) => s + p.pct, 0);
-      if (sum !== 100) next[0].pct += 100 - sum;
-      return next;
+      if (total > 0) {
+        others.forEach(p => { p.pct = clamp(Math.round(p.pct - delta * (p.pct / total)), 0, 100); });
+      }
+      const sum = newList.reduce((s, p) => s + p.pct, 0);
+      if (sum !== 100) newList[0].pct += 100 - sum;
+      return newList;
     });
   };
 
-  useEffect(() => {
-    if (step === 5 && selectedFil && selectedPrinters.length && Number(grams) > 0 && Number(hours) > 0) {
-      const result = computeEngine({ printers: selectedPrinters, filament: selectedFil, grams: Number(grams), hours: Number(hours), pricingConfig }, printerDB);
-      setCostResult(result.ok ? result : null);
-      setSaveError(result.ok ? "" : result.message);
-      if (result.ok) setCustomPrice(String(result.totals.charged));
-    }
-  }, [step, selectedFil, selectedPrinters, grams, hours, pricingConfig, printerDB]);
-
-  const setupIssues = setupMissing({ printers: printerRows, filaments, pricingConfig });
-
   const stepValid = useCallback(() => {
     switch (step) {
-      case 1: return Boolean(jobType);
-      case 2: return selectedPrinters.length > 0 && selectedPrinters.reduce((s, p) => s + Number(p.pct), 0) === 100;
-      case 3: return Boolean(selectedFil);
-      case 4: return Number(grams) > 0 && Number(hours) > 0;
-      case 5: return Boolean(costResult);
-      case 6: return Number(customPrice) >= 0;
+      case 1: return !!jobType;
+      case 2: return selectedPrinters.length > 0;
+      case 3: return !!selectedFil;
+      case 4: return grams > 0 && hours > 0;
+      case 5: return !!costResult;
+      case 6: return true;
       case 7: return clientName.trim().length > 0;
       case 8: return true;
       default: return false;
     }
-  }, [step, jobType, selectedPrinters, selectedFil, grams, hours, costResult, customPrice, clientName]);
+  }, [step, jobType, selectedPrinters, selectedFil, grams, hours, costResult, clientName]);
 
-  const goNext = () => { if (stepValid()) setStep((s) => Math.min(8, s + 1)); };
-  const goBack = () => { setStep((s) => Math.max(1, s - 1)); if (step <= 5) setCostResult(null); };
+  // Auto-compute cost on step 5
+  useEffect(() => {
+    if (step === 5 && selectedFil && grams && hours && selectedPrinters.length > 0) {
+      const r = _computeEngine(
+        { printers: selectedPrinters, filament: selectedFil, grams, hours, elecRate: pricingConfig.electricity_rate, pricingConfig },
+        printerDB
+      );
+      setCostResult(r);
+      if (r) setCustomPrice(r.totals.charged);
+    }
+  }, [step, selectedFil, grams, hours, selectedPrinters, pricingConfig, printerDB]);
 
+  const goNext = () => { if (stepValid()) setStep(s => Math.min(8, s + 1)); };
+  const goBack = () => { setStep(s => Math.max(1, s - 1)); if (step <= 5) setCostResult(null); };
+
+  // ── Save job to Supabase ──────────────────────────────────────────────────
   const finalizeJob = async () => {
-    if (!costResult || !selectedFil) return;
+    if (!costResult) return;
     setSaving(true);
     setSaveError("");
+    const finalPrice = customPrice ?? costResult.totals.charged;
     try {
-      const finalPrice = Number(customPrice || costResult.totals.charged);
+      // 1. Insert job row
       const { data: jobData, error: jobErr } = await supabase
         .from("jobs")
         .insert({
-          client_name: clientName.trim(),
+          client_name: clientName,
           job_type: jobType,
           filament_id: selectedFil.id,
           parts,
-          total_grams: Number(grams),
-          total_hours: Number(hours),
+          total_grams: grams,
+          total_hours: hours,
           charged_total: finalPrice,
           real_total: costResult.totals.real,
-          profit_total: finalPrice - costResult.totals.real,
+          profit_total: costResult.totals.profit,
           deadline: deadline || null,
           notes: notes || null,
-          cost_result: { ...costResult, totals: { ...costResult.totals, charged: finalPrice, profit: finalPrice - costResult.totals.real } },
+          cost_result: costResult,
           payment_status: "unpaid",
           status: "pending",
         })
-        .select("*, filaments(*), job_printer_allocations(*, printers(*))")
+        .select()
         .single();
+
       if (jobErr) throw new Error(jobErr.message);
 
-      const allocations = selectedPrinters.map((p) => ({ job_id: jobData.id, printer_id: p.id, percentage: p.pct }));
-      const { error: allocErr } = await supabase.from("job_printer_allocations").insert(allocations);
-      if (allocErr) throw new Error(allocErr.message);
+      // 2. Insert printer allocations
+      if (selectedPrinters.length > 0) {
+        const allocRows = selectedPrinters.map(p => ({
+          job_id: jobData.id,
+          printer_id: p.id,
+          percentage: p.pct,
+        }));
+        const { error: allocErr } = await supabase.from("job_printer_allocations").insert(allocRows);
+        if (allocErr) throw new Error(allocErr.message);
+      }
 
-      await loadAll();
-      setReceiptJob({ ...jobData, filaments: selectedFil, job_printer_allocations: allocations.map((a) => ({ ...a, printers: printerRows.find((p) => p.id === a.printer_id) })) });
+      // 3. Store for receipt display
+      const job = {
+        id: jobData.id,
+        date: jobData.created_at ? new Date(jobData.created_at).toLocaleDateString() : new Date().toLocaleDateString(),
+        createdAt: jobData.created_at,
+        jobType,
+        clientName,
+        deadline,
+        notes,
+        parts,
+        grams,
+        hours,
+        filament: selectedFil,
+        printers: selectedPrinters,
+        printerDB,
+        cost: costResult,
+        finalPrice,
+        status: jobData.status || "pending",
+        paymentStatus: jobData.payment_status || "unpaid",
+      };
+      setCompletedJobs(prev => [job, ...prev.filter((existing) => existing.id !== job.id)]);
       setShowReceipt(true);
-      setView("pos");
     } catch (err) {
       setSaveError(err.message || "Failed to save job.");
     } finally {
@@ -520,281 +671,857 @@ export default function App() {
   };
 
   const resetJob = () => {
-    setStep(1);
-    setJobType("");
-    setSelectedPrinters([]);
-    setSelectedFil(null);
-    setGrams("");
-    setHours("");
-    setCostResult(null);
-    setCustomPrice("");
-    setClientName("");
-    setDeadline("");
-    setNotes("");
-    setParts("");
-    setShowReceipt(false);
-    setReceiptJob(null);
-    setSaveError("");
+    setStep(1); setJobType(""); setSelectedPrinters([]); setSelectedFil(null);
+    setGrams(50); setHours(3); setCostResult(null); setCustomPrice(null);
+    setClientName(""); setDeadline(""); setNotes(""); setParts("");
+    setShowReceipt(false); setSaveError("");
   };
 
-  const signIn = async (e) => {
-    e.preventDefault();
-    setAuthError("");
-    const { error } = await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
-    if (error) setAuthError(error.message);
+  const updateJobField = async (jobId, field, value) => {
+    const { error } = await supabase.from("jobs").update({ [field]: value }).eq("id", jobId);
+    if (error) {
+      setDbError(error.message);
+      return;
+    }
+    setCompletedJobs((prev) => prev.map((job) => (
+      job.id === jobId
+        ? { ...job, [field === "payment_status" ? "paymentStatus" : field]: value }
+        : job
+    )));
   };
 
-  if (!session) {
+  const filteredFils = filaments.filter(f =>
+    f.active &&
+    (filSearch === "" || `${f.brand} ${f.type} ${f.color}`.toLowerCase().includes(filSearch.toLowerCase()))
+  );
+
+  if (dbLoading) {
     return (
       <>
         <style>{css}</style>
-        <div className="loading-screen" style={{ padding: 20 }}>
-          <form className="card" style={{ width: 420, maxWidth: "100%" }} onSubmit={signIn}>
-            <div className="page-title" style={{ marginBottom: 6 }}>TechCraft POS Login</div>
-            <div className="page-sub" style={{ marginBottom: 18 }}>Use your Supabase Auth staff account.</div>
-            <div className="input-group"><label>Email</label><input type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} /></div>
-            <div className="input-group"><label>Password</label><input type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} /></div>
-            {authError && <div className="validation-gate">{authError}</div>}
-            <button className="btn btn-primary" style={{ width: "100%" }} type="submit">Sign In</button>
-          </form>
+        <div className="loading-screen">
+          <div className="loading-spinner" />
+          <div style={{ fontSize: 13, color: T.textMuted }}>Loading data…</div>
         </div>
       </>
     );
   }
 
-  if (dbLoading) {
-    return <><style>{css}</style><div className="loading-screen"><div className="loading-spinner" /><div style={{ fontSize: 13, color: T.textMuted }}>Loading data…</div></div></>;
-  }
-
-  const nav = [
-    { id: "pos", label: "New Job" },
-    { id: "orders", label: "Job Orders" },
-    { id: "inventory", label: "Filaments" },
-    { id: "printers", label: "Printers" },
-    { id: "analytics", label: "Analytics" },
-    { id: "settings", label: "Pricing" },
-  ];
-
   return (
     <>
       <style>{css}</style>
       <div className="app">
+        {/* SIDEBAR */}
         <aside className="sidebar">
-          <div className="logo"><div className="logo-mark">3D Printing POS</div><div className="logo-name">TechCraft Innovator</div></div>
+          <div className="logo">
+            <div className="logo-mark">3D Printing POS</div>
+            <div className="logo-name">TechCraft Innovator</div>
+          </div>
           <div className="nav-section">
             <div className="nav-label">Workflow</div>
-            {nav.map((n) => <div key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => { setView(n.id); if (n.id !== "pos") setShowReceipt(false); }}><span className="nav-dot" />{n.label}</div>)}
+            {[
+              { id: "pos", label: "New Job" },
+              { id: "jobs", label: "Job Orders" },
+              { id: "inventory", label: "Filament Inventory" },
+              { id: "analytics", label: "Analytics" },
+              { id: "settings", label: "Pricing" },
+            ].map(n => (
+              <div key={n.id} className={`nav-item ${view === n.id ? "active" : ""}`} onClick={() => setView(n.id)}>
+                <span className="nav-dot" />
+                {n.label}
+              </div>
+            ))}
           </div>
           <div className="nav-bottom">
-            <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{jobs.length} saved orders</div>
-            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>{filaments.filter((f) => f.active).length} active filaments</div>
-            <button className="btn btn-ghost" style={{ width: "100%", marginTop: 12, padding: "7px 10px", fontSize: 11 }} onClick={() => supabase.auth.signOut()}>Sign Out</button>
+            <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>
+              {completedJobs.length} jobs this session
+            </div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>
+              {filaments.filter(f => f.active).length} filaments
+            </div>
           </div>
         </aside>
+
+        {/* MAIN CONTENT */}
         <main className="main">
           {dbError && <div className="db-error">⚠ Database error: {dbError}</div>}
-          {setupIssues.length > 0 && view === "pos" && <SetupWarning issues={setupIssues} setView={setView} />}
 
           {view === "pos" && !showReceipt && (
             <POSView
               step={step} stepValid={stepValid} goNext={goNext} goBack={goBack}
               jobType={jobType} setJobType={setJobType}
-              selectedPrinters={selectedPrinters} togglePrinter={togglePrinter} setPrinterPct={setPrinterPct} printerDB={printerDB} printerRows={printerRows}
-              filaments={activeFilaments} filSearch={filSearch} setFilSearch={setFilSearch} selectedFil={selectedFil} setSelectedFil={setSelectedFil}
+              selectedPrinters={selectedPrinters} togglePrinter={togglePrinter}
+              setPrinterPct={setPrinterPct} printerDB={printerDB} printerRows={printerRows}
+              filaments={filteredFils} filSearch={filSearch} setFilSearch={setFilSearch}
+              selectedFil={selectedFil} setSelectedFil={setSelectedFil}
               grams={grams} setGrams={setGrams} hours={hours} setHours={setHours}
               costResult={costResult} customPrice={customPrice} setCustomPrice={setCustomPrice}
-              clientName={clientName} setClientName={setClientName} deadline={deadline} setDeadline={setDeadline}
-              notes={notes} setNotes={setNotes} parts={parts} setParts={setParts}
+              clientName={clientName} setClientName={setClientName}
+              deadline={deadline} setDeadline={setDeadline}
+              notes={notes} setNotes={setNotes}
+              parts={parts} setParts={setParts}
               finalizeJob={finalizeJob} saving={saving} saveError={saveError}
-              setupIssues={setupIssues}
             />
           )}
-          {view === "pos" && showReceipt && receiptJob && <ReceiptView job={receiptJob} onNew={resetJob} />}
-          {view === "orders" && <JobOrdersView jobs={jobs} setJobs={setJobs} reload={loadAll} />}
-          {view === "inventory" && <InventoryView filaments={filaments} reload={loadAll} />}
-          {view === "printers" && <PrintersView printerRows={printerRows} reload={loadAll} />}
-          {view === "settings" && <PricingSettingsView pricingConfig={pricingConfig} setPricingConfig={setPricingConfig} reload={loadAll} />}
-          {view === "analytics" && <AnalyticsView jobs={jobs} />}
+
+          {view === "pos" && showReceipt && completedJobs[0] && (
+            <ReceiptView job={completedJobs[0]} onNew={resetJob} />
+          )}
+
+          {view === "inventory" && (
+            <InventoryView
+              filaments={filaments}
+              setFilaments={setFilaments}
+              reloadFilaments={reloadFilaments}
+            />
+          )}
+
+          {view === "jobs" && <JobsView jobs={completedJobs} onRefresh={reloadJobs} onUpdateJobField={updateJobField} />}
+          {view === "analytics" && <AnalyticsView jobs={completedJobs} />}
+          {view === "settings" && (
+            <PricingSettingsView
+              pricingConfig={pricingConfig}
+              setPricingConfig={setPricingConfig}
+            />
+          )}
         </main>
       </div>
     </>
   );
 }
 
-function SetupWarning({ issues, setView }) {
-  return (
-    <div className="validation-gate">
-      <strong>Setup required before creating jobs:</strong>
-      <ul style={{ marginTop: 8, marginLeft: 18 }}>{issues.map((x) => <li key={x}>{x}</li>)}</ul>
-      <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button className="btn btn-ghost" onClick={() => setView("printers")}>Printers</button>
-        <button className="btn btn-ghost" onClick={() => setView("inventory")}>Filaments</button>
-        <button className="btn btn-ghost" onClick={() => setView("settings")}>Pricing</button>
-      </div>
-    </div>
-  );
-}
-
-function POSView(props) {
-  const { step, stepValid, goNext, goBack, finalizeJob, saving, saveError, setupIssues } = props;
+// ─── POS VIEW ─────────────────────────────────────────────────────────────────
+function POSView({
+  step, stepValid, goNext, goBack,
+  jobType, setJobType,
+  selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows,
+  filaments, filSearch, setFilSearch, selectedFil, setSelectedFil,
+  grams, setGrams, hours, setHours,
+  costResult, customPrice, setCustomPrice,
+  clientName, setClientName, deadline, setDeadline,
+  notes, setNotes, parts, setParts,
+  finalizeJob, saving, saveError,
+}) {
   return (
     <div>
-      <div className="page-header"><div><div className="page-title">New Print Job</div><div className="page-sub">Create the order once. It will appear in Job Orders from the database.</div></div></div>
-      <Stepper step={step} />
-      {step === 1 && <Step1 {...props} />}
-      {step === 2 && <Step2 {...props} />}
-      {step === 3 && <Step3 {...props} />}
-      {step === 4 && <Step4 {...props} />}
-      {step === 5 && <Step5 {...props} />}
-      {step === 6 && <Step6 {...props} />}
-      {step === 7 && <Step7 {...props} />}
-      {step === 8 && <Step8 {...props} />}
-      {saveError && <div className="validation-gate">{saveError}</div>}
+      <div className="page-header">
+        <div className="page-title">New Print Job</div>
+        <div className="page-sub">Follow the steps to configure and price your job</div>
+      </div>
+      <div className="stepper">
+        {STEPS.map((s, i) => (
+          <div key={s.id} className="step-item">
+            <div className={`step-circle ${step > s.id ? "done" : step === s.id ? "active" : ""}`}>
+              {step > s.id ? "✓" : s.id}
+            </div>
+            <span className={`step-label ${step === s.id ? "active" : ""}`}>{s.label}</span>
+            {i < STEPS.length - 1 && <div className={`step-connector ${step > s.id ? "done" : ""}`} />}
+          </div>
+        ))}
+      </div>
+
+      {step === 1 && <Step1 jobType={jobType} setJobType={setJobType} />}
+      {step === 2 && <Step2 selectedPrinters={selectedPrinters} togglePrinter={togglePrinter} setPrinterPct={setPrinterPct} printerDB={printerDB} printerRows={printerRows} />}
+      {step === 3 && <Step3 filaments={filaments} filSearch={filSearch} setFilSearch={setFilSearch} selectedFil={selectedFil} setSelectedFil={setSelectedFil} />}
+      {step === 4 && <Step4 grams={grams} setGrams={setGrams} hours={hours} setHours={setHours} selectedFil={selectedFil} />}
+      {step === 5 && <Step5 costResult={costResult} />}
+      {step === 6 && <Step6 costResult={costResult} customPrice={customPrice} setCustomPrice={setCustomPrice} />}
+      {step === 7 && <Step7 clientName={clientName} setClientName={setClientName} deadline={deadline} setDeadline={setDeadline} notes={notes} setNotes={setNotes} parts={parts} setParts={setParts} />}
+      {step === 8 && <Step8 jobType={jobType} selectedPrinters={selectedPrinters} printerDB={printerDB} selectedFil={selectedFil} grams={grams} hours={hours} costResult={costResult} customPrice={customPrice} clientName={clientName} deadline={deadline} notes={notes} parts={parts} />}
+
+      {saveError && <div className="validation-gate" style={{ marginTop: 12 }}>Save error: {saveError}</div>}
+
       <div className="btn-row">
         <button className="btn btn-ghost" onClick={goBack} disabled={step === 1 || saving}>← Back</button>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {!stepValid() && step < 8 && <span style={{ fontSize: 12, color: T.danger }}>Complete this step to continue</span>}
-          {step < 8 && <button className="btn btn-primary" onClick={goNext} disabled={!stepValid() || saving || setupIssues.length > 0}>Continue →</button>}
-          {step === 8 && <button className="btn btn-primary" onClick={finalizeJob} disabled={saving}>{saving ? "Saving…" : "Finalize & Save Order"}</button>}
+          {step < 8 && <button className="btn btn-primary" onClick={goNext} disabled={!stepValid() || saving}>Continue →</button>}
+          {step === 8 && (
+            <button className="btn btn-primary" onClick={finalizeJob} disabled={saving}>
+              {saving ? "Saving…" : "Finalize & Print Receipt"}
+            </button>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-function Stepper({ step }) {
-  const steps = ["Job Type", "Printers", "Filament", "Parameters", "Cost Engine", "Pricing", "Metadata", "Confirm"];
-  return <div className="stepper">{steps.map((label, i) => { const id = i + 1; return <div key={label} className="step-item"><div className={`step-circle ${step > id ? "done" : step === id ? "active" : ""}`}>{step > id ? "✓" : id}</div><span className={`step-label ${step === id ? "active" : ""}`}>{label}</span>{i < steps.length - 1 && <div className={`step-connector ${step > id ? "done" : ""}`} />}</div>; })}</div>;
-}
-
 function Step1({ jobType, setJobType }) {
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Job Type</div><div className="grid3">{JOB_TYPES.map((t) => <div key={t} className={`chip ${jobType === t ? "selected" : ""}`} onClick={() => setJobType(t)}>{t}</div>)}</div></div>;
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Job Type</div>
+      <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 16 }}>What kind of print job is this?</p>
+      <div className="grid3">
+        {JOB_TYPES.map(t => (
+          <div key={t} className={`chip ${jobType === t ? "selected" : ""}`} onClick={() => setJobType(t)}>{t}</div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function Step2({ selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows }) {
-  const allocTotal = selectedPrinters.reduce((s, p) => s + Number(p.pct), 0);
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Printer Assignment</div>{printerRows.length === 0 ? <p style={{ fontSize: 13, color: T.textMuted }}>No active printers found.</p> : <div className="grid2" style={{ marginBottom: 20 }}>{printerRows.map((p) => <div key={p.id} className={`chip-printer ${selectedPrinters.find((s) => s.id === p.id) ? "selected" : ""}`} onClick={() => togglePrinter(p.id)}><div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}><div className="printer-name">{p.name}</div><div style={{ display: "flex", gap: 4 }}>{p.multicolor && <span className="badge badge-purple">AMS</span>}<span className="badge badge-info">{p.wattage}W</span></div></div><div className="printer-meta">{p.brand || "—"} · {p.build_volume || "—"}</div></div>)}</div>}{selectedPrinters.length > 0 && <><div className="card-title" style={{ marginTop: 8 }}><span className="card-title-dot" />Allocation</div>{selectedPrinters.map((sp) => { const p = printerDB[sp.id]; if (!p) return null; return <div key={sp.id} className="alloc-row"><span className="alloc-name">{p.name}</span><div style={{ flex: 1 }}><input type="range" min={selectedPrinters.length > 1 ? 5 : 100} max={selectedPrinters.length > 1 ? 95 : 100} step={5} value={sp.pct} onChange={(e) => setPrinterPct(sp.id, +e.target.value)} /></div><span className="alloc-pct">{sp.pct}%</span></div>; })}<div style={{ fontSize: 12, color: allocTotal === 100 ? T.accent : T.danger }}>Total: {allocTotal}%</div></>}</div>;
+  const allocTotal = selectedPrinters.reduce((s, p) => s + p.pct, 0);
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Printer Assignment</div>
+      {printerRows.length === 0 ? (
+        <p style={{ fontSize: 13, color: T.textMuted }}>No active printers found in database.</p>
+      ) : (
+        <div className="grid2" style={{ marginBottom: 20 }}>
+          {printerRows.map(p => (
+            <div key={p.id} className={`chip-printer ${selectedPrinters.find(s => s.id === p.id) ? "selected" : ""}`} onClick={() => togglePrinter(p.id)}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                <div className="printer-name">{p.name}</div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {p.multicolor && <span className="badge badge-purple">AMS</span>}
+                  <span className="badge badge-info">{p.wattage}W</span>
+                </div>
+              </div>
+              <div className="printer-meta">{p.brand} · {p.build_volume}</div>
+            </div>
+          ))}
+        </div>
+      )}
+      {selectedPrinters.length > 0 && (
+        <>
+          <div className="card-title" style={{ marginTop: 8 }}><span className="card-title-dot" />Allocation</div>
+          {selectedPrinters.map(sp => {
+            const p = printerDB[sp.id];
+            if (!p) return null;
+            return (
+              <div key={sp.id} className="alloc-row">
+                <span className="alloc-name">{p.name}</span>
+                <div style={{ flex: 1 }}>
+                  <input type="range" min={selectedPrinters.length > 1 ? 5 : 100} max={selectedPrinters.length > 1 ? 95 : 100} step={5}
+                    value={sp.pct} onChange={e => setPrinterPct(sp.id, +e.target.value)} />
+                </div>
+                <span className="alloc-pct">{sp.pct}%</span>
+              </div>
+            );
+          })}
+          <div className="alloc-total">Total: <span>{allocTotal}%</span> {allocTotal !== 100 && <span style={{ color: T.danger }}>⚠ Must equal 100%</span>}</div>
+        </>
+      )}
+    </div>
+  );
 }
 
 function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil }) {
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Filament Selection</div><div className="search-box input-group"><span className="search-icon">⌕</span><input type="text" placeholder="Search by brand, type, color…" value={filSearch} onChange={(e) => setFilSearch(e.target.value)} /></div>{filaments.length === 0 ? <p style={{ fontSize: 13, color: T.textDim, textAlign: "center", padding: "20px 0" }}>No active filaments found.</p> : <div className="grid2">{filaments.map((f) => <div key={f.id} className={`filament-card ${selectedFil?.id === f.id ? "selected" : ""}`} onClick={() => setSelectedFil(f)}><div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}><span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} /><span className="fil-name">{f.color}</span><span className="badge badge-info">{f.type}</span></div><div className="fil-meta">{f.brand} · {f.finish}</div><div className="fil-meta">true ₱{Number(f.true_cost_per_kg).toFixed(2)}/kg · sell ₱{Number(f.selling_price_per_kg).toFixed(2)}/kg</div></div>)}</div>}</div>;
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Filament Selection</div>
+      <div className="search-box input-group">
+        <span className="search-icon">⌕</span>
+        <input type="text" placeholder="Search by brand, type, color…" value={filSearch} onChange={e => setFilSearch(e.target.value)} />
+      </div>
+      {filaments.length === 0 ? (
+        <p style={{ fontSize: 13, color: T.textDim, textAlign: "center", padding: "20px 0" }}>No active filaments found in database.</p>
+      ) : (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          {filaments.map(f => (
+            <div key={f.id} className={`filament-card ${selectedFil?.id === f.id ? "selected" : ""}`} onClick={() => setSelectedFil(f)}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} />
+                <span className="fil-name">{f.color}</span>
+                <span className="badge badge-info">{f.type}</span>
+              </div>
+              <div className="fil-meta">{f.brand} · {f.finish} · ₱{f.price_per_kg}/kg</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Print Parameters</div>{selectedFil && <div className="notice">{selectedFil.brand} {selectedFil.type} — {selectedFil.color}</div>}<div className="input-row"><div className="input-group"><label>Filament Usage (grams)</label><input type="number" min="0" step="0.01" value={grams} onChange={(e) => setGrams(e.target.value)} /></div><div className="input-group"><label>Print Duration (hours)</label><input type="number" min="0" step="0.01" value={hours} onChange={(e) => setHours(e.target.value)} /></div></div></div>;
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Print Parameters</div>
+      {selectedFil && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 20, padding: "10px 14px", background: T.bgInput, borderRadius: 8, alignItems: "center" }}>
+          <span className="filament-color-dot" style={{ background: getFilColor(selectedFil.color), border: "1px solid rgba(255,255,255,0.1)" }} />
+          <span style={{ fontSize: 13, color: T.text }}>{selectedFil.brand} {selectedFil.type} — {selectedFil.color}</span>
+          <span className="badge badge-warn">{selectedFil.finish}</span>
+        </div>
+      )}
+      <div className="input-group">
+        <label>Filament Usage</label>
+        <div className="slider-row">
+          <input type="range" min={1} max={500} step={1} value={grams} onChange={e => setGrams(+e.target.value)} />
+          <span className="slider-val">{grams}g</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.textDim, marginTop: 4 }}>
+          <span>1g</span>
+          <span style={{ color: T.textMuted }}>{(grams / 1000 * (selectedFil?.price_per_kg || 0)).toFixed(2)} ₱ raw material</span>
+          <span>500g</span>
+        </div>
+      </div>
+      <div className="input-group" style={{ marginTop: 16 }}>
+        <label>Print Duration</label>
+        <div className="slider-row">
+          <input type="range" min={0.5} max={72} step={0.5} value={hours} onChange={e => setHours(+e.target.value)} />
+          <span className="slider-val">{hours}h</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.textDim, marginTop: 4 }}>
+          <span>0.5h</span><span style={{ color: T.textMuted }}>{(hours * 60).toFixed(0)} minutes</span><span>72h</span>
+        </div>
+      </div>
+      <div className="grid2" style={{ marginTop: 20 }}>
+        <div className="stat-card"><div className="stat-label">Weight</div><div className="stat-val">{grams}g</div><div className="stat-sub">{(grams / 1000).toFixed(3)} kg</div></div>
+        <div className="stat-card"><div className="stat-label">Time</div><div className="stat-val">{hours}h</div><div className="stat-sub">{(hours * 60).toFixed(0)} min</div></div>
+      </div>
+    </div>
+  );
 }
 
 function Step5({ costResult }) {
-  if (!costResult) return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Cost engine is waiting for complete setup values.</p></div>;
-  const items = [{ label: "Filament", ...costResult.filament }, { label: "Electricity", ...costResult.electricity }, { label: "Printer Usage", ...costResult.printer_usage }];
-  return <div><div className="card"><div className="card-title"><span className="card-title-dot" />Cost Breakdown</div><table className="table"><thead><tr><th>Component</th><th>Real Cost</th><th>Charged</th><th>Profit</th></tr></thead><tbody>{items.map((item) => <tr key={item.label}><td>{item.label}</td><td>{peso(item.real)}</td><td>{peso(item.charged)}</td><td style={{ color: T.accent }}>+{peso(item.profit)}</td></tr>)}<tr><td><strong>Total</strong></td><td>{peso(costResult.totals.real)}</td><td><strong>{peso(costResult.totals.charged)}</strong></td><td style={{ color: T.accent }}><strong>{peso(costResult.totals.profit)}</strong></td></tr></tbody></table></div><div className="grid3"><div className="stat-card"><div className="stat-label">Lowest Cost</div><div className="stat-val" style={{ fontSize: 15 }}>{costResult.recommendation.lowest_cost}</div></div><div className="stat-card"><div className="stat-label">Fastest</div><div className="stat-val" style={{ fontSize: 15 }}>{costResult.recommendation.fastest}</div></div><div className="stat-card"><div className="stat-label">Highest Profit</div><div className="stat-val" style={{ fontSize: 15 }}>{costResult.recommendation.highest_profit}</div></div></div></div>;
+  if (!costResult) return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Computing costs…</p></div>;
+  const items = [
+    { label: "Filament", ...costResult.filament },
+    { label: "Electricity", ...costResult.electricity },
+    { label: "Printer Usage", ...costResult.printer_usage },
+  ];
+  const maxProfit = Math.max(...items.map(i => i.profit));
+  return (
+    <div>
+      <div className="card">
+        <div className="card-title"><span className="card-title-dot" />Cost Breakdown</div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 0 }}>
+          {["Component", "Real Cost", "Charged", "Profit"].map(h => (
+            <div key={h} style={{ fontSize: 11, color: T.textDim, padding: "0 0 8px", textAlign: h !== "Component" ? "right" : "left", textTransform: "uppercase", letterSpacing: "0.8px" }}>{h}</div>
+          ))}
+        </div>
+        {items.map(item => (
+          <div key={item.label}>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 0, padding: "10px 0", borderTop: `1px solid ${T.border}` }}>
+              <span className="cost-name">{item.label}</span>
+              <span className="cost-real" style={{ textAlign: "right" }}>₱{item.real.toFixed(2)}</span>
+              <span className="cost-charged" style={{ textAlign: "right" }}>₱{item.charged.toFixed(2)}</span>
+              <span className="cost-profit" style={{ textAlign: "right" }}>+₱{item.profit.toFixed(2)}</span>
+            </div>
+            <div className="profit-bar-wrap">
+              <div className="profit-bar-track" style={{ flex: 1 }}>
+                <div className="profit-bar-fill" style={{ width: `${maxProfit > 0 ? (item.profit / maxProfit * 100) : 0}%`, background: T.accent }} />
+              </div>
+            </div>
+          </div>
+        ))}
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 0, padding: "12px 0 0", borderTop: `2px solid ${T.accent}`, marginTop: 8 }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Total</span>
+          <span style={{ textAlign: "right", fontSize: 13, color: T.textDim, fontFamily: T.fontMono }}>₱{costResult.totals.real.toFixed(2)}</span>
+          <span style={{ textAlign: "right", fontSize: 13, fontWeight: 600, color: T.text, fontFamily: T.fontMono }}>₱{costResult.totals.charged.toFixed(2)}</span>
+          <span style={{ textAlign: "right", fontSize: 13, fontWeight: 600, color: T.accent, fontFamily: T.fontMono }}>+₱{costResult.totals.profit.toFixed(2)}</span>
+        </div>
+      </div>
+      {costResult.formula_error && (
+        <div className="validation-gate" style={{ marginBottom: 16 }}>Pricing formula warning: {costResult.formula_error}</div>
+      )}
+      <div className="card">
+        <div className="card-title"><span className="card-title-dot" />Recommendation</div>
+        <div className="grid3">
+          <div className="rec-card"><div className="rec-title">Lowest Cost</div><div className="rec-val">{costResult.recommendation.lowest_cost}</div></div>
+          <div className="rec-card"><div className="rec-title">Fastest</div><div className="rec-val">{costResult.recommendation.fastest}</div></div>
+          <div className="rec-card"><div className="rec-title">Highest Profit</div><div className="rec-val">{costResult.recommendation.highest_profit}</div></div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function Step6({ costResult, customPrice, setCustomPrice }) {
   if (!costResult) return null;
-  const finalPrice = Number(customPrice || costResult.totals.charged);
+  const finalPrice = customPrice ?? costResult.totals.charged;
   const profit = finalPrice - costResult.totals.real;
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Pricing Review</div><div className="grid2"><div className="stat-card"><div className="stat-label">Suggested Price</div><div className="stat-val">{peso(costResult.totals.charged)}</div></div><div className="stat-card"><div className="stat-label">Your Price</div><div className="stat-val" style={{ color: T.accent }}>{peso(finalPrice)}</div></div></div><div className="input-group" style={{ marginTop: 16 }}><label>Final Price (₱)</label><input type="number" value={customPrice} min={0} step={0.01} onChange={(e) => setCustomPrice(e.target.value)} /></div><div className="notice">Profit at this price: <strong>{peso(profit)}</strong></div></div>;
+  const margin = finalPrice > 0 ? (profit / finalPrice * 100) : 0;
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Pricing Review</div>
+      <div className="grid2" style={{ marginBottom: 20 }}>
+        <div className="stat-card"><div className="stat-label">Suggested Price</div><div className="stat-val">₱{costResult.totals.charged.toFixed(2)}</div><div className="stat-sub">System recommendation</div></div>
+        <div className="stat-card"><div className="stat-label">Your Price</div><div className="stat-val stat-profit">₱{finalPrice.toFixed(2)}</div><div className="stat-sub">Editable below</div></div>
+      </div>
+      <div className="input-group">
+        <label>Final Price (₱)</label>
+        <div className="input-addon">
+          <span className="input-prefix">₱</span>
+          <input type="number" value={finalPrice} min={0} step={0.5} onChange={e => setCustomPrice(+e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
+        </div>
+      </div>
+      <div style={{ marginTop: 16, padding: "12px 16px", background: T.bgInput, borderRadius: 9 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <span style={{ fontSize: 13, color: T.textMuted }}>Profit at this price</span>
+          <span style={{ fontSize: 14, fontWeight: 600, color: profit >= 0 ? T.accent : T.danger, fontFamily: T.fontMono }}>₱{profit.toFixed(2)}</span>
+        </div>
+        <div className="progress-bar">
+          <div className="progress-fill" style={{ width: `${clamp(margin, 0, 100)}%`, background: margin < 20 ? T.warn : T.accent }} />
+        </div>
+        <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>{margin.toFixed(1)}% margin</div>
+      </div>
+    </div>
+  );
 }
 
 function Step7({ clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts }) {
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Job Metadata</div><div className="input-row"><div className="input-group"><label>Client Name *</label><input type="text" value={clientName} onChange={(e) => setClientName(e.target.value)} /></div><div className="input-group"><label>Deadline</label><input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} /></div></div><div className="input-group"><label>Parts / Items</label><input type="text" value={parts} onChange={(e) => setParts(e.target.value)} placeholder="e.g. 3x bracket, 1x base" /></div><div className="input-group"><label>Notes</label><textarea rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} /></div></div>;
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Job Metadata</div>
+      <div className="input-row">
+        <div className="input-group">
+          <label>Client Name *</label>
+          <input type="text" placeholder="e.g. Maria Santos" value={clientName} onChange={e => setClientName(e.target.value)} />
+          {!clientName.trim() && <div className="error-msg">Required</div>}
+        </div>
+        <div className="input-group">
+          <label>Deadline</label>
+          <input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} />
+        </div>
+      </div>
+      <div className="input-group">
+        <label>Parts / Items</label>
+        <input type="text" placeholder="e.g. 3x bracket, 1x base" value={parts} onChange={e => setParts(e.target.value)} />
+      </div>
+      <div className="input-group">
+        <label>Notes</label>
+        <textarea rows={3} placeholder="Special instructions, color requirements…" value={notes} onChange={e => setNotes(e.target.value)} style={{ resize: "none" }} />
+      </div>
+    </div>
+  );
 }
 
-function Step8({ jobType, selectedPrinters, printerDB, selectedFil, grams, hours, costResult, customPrice, clientName, deadline, parts }) {
-  const finalPrice = Number(customPrice || costResult?.totals.charged || 0);
-  const rows = [
-    ["Job Type", jobType],
-    ["Printers", selectedPrinters.map((p) => `${printerDB[p.id]?.name || p.id} (${p.pct}%)`).join(", ")],
-    ["Filament", selectedFil ? `${selectedFil.brand} ${selectedFil.type} — ${selectedFil.color}` : "—"],
-    ["Parameters", `${grams}g · ${hours}h`],
-    ["Total", peso(finalPrice)],
-    ["Client", clientName],
-    ["Deadline", deadline || "None"],
-    ["Parts", parts || "Not specified"],
+function Step8({ jobType, selectedPrinters, printerDB, selectedFil, grams, hours, costResult, customPrice, clientName, deadline, notes, parts }) {
+  const finalPrice = customPrice ?? costResult?.totals.charged;
+  const checks = [
+    { label: "Job Type", val: jobType },
+    { label: "Printers", val: selectedPrinters.map(p => `${printerDB[p.id]?.name ?? p.id} (${p.pct}%)`).join(", ") },
+    { label: "Filament", val: selectedFil ? `${selectedFil.brand} ${selectedFil.type} — ${selectedFil.color}` : "—" },
+    { label: "Parameters", val: `${grams}g · ${hours}h` },
+    { label: "Total Cost", val: finalPrice ? `₱${finalPrice.toFixed(2)}` : "—" },
+    { label: "Client", val: clientName },
+    { label: "Deadline", val: deadline || "None" },
+    { label: "Parts", val: parts || "Not specified" },
   ];
-  return <div className="card"><div className="card-title"><span className="card-title-dot" />Final Confirmation</div>{rows.map(([k, v]) => <div key={k} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}` }}><div style={{ fontSize: 12, color: T.textMuted }}>{k}</div><div style={{ fontSize: 13, color: T.text, fontWeight: 500, marginTop: 2 }}>{v}</div></div>)}<div className="notice" style={{ marginTop: 16 }}>This will save to the <strong>jobs</strong> table and appear in Job Orders.</div></div>;
+  return (
+    <div className="card">
+      <div className="card-title"><span className="card-title-dot" />Final Confirmation</div>
+      {checks.map(c => (
+        <div key={c.label} className="confirm-check">
+          <span className="check-icon">✓</span>
+          <div><div className="check-label">{c.label}</div><div className="check-val">{c.val}</div></div>
+        </div>
+      ))}
+      <div style={{ marginTop: 16, padding: "10px 14px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 8, fontSize: 13, color: T.accent }}>
+        Ready to finalize. Click "Finalize & Print Receipt" to complete.
+      </div>
+    </div>
+  );
 }
 
+// ─── RECEIPT VIEW ─────────────────────────────────────────────────────────────
 function ReceiptView({ job, onNew }) {
-  const allocations = job.job_printer_allocations || [];
-  return <div><div className="page-header"><div><div className="page-title">Job Saved</div><div className="page-sub">Receipt generated for {job.client_name}</div></div></div><div className="receipt"><h2>TechCraft Innovator</h2><div className="sub">3D Print Receipt</div><div className="sub">{new Date().toLocaleDateString()} · {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div><hr /><div className="r-row"><span>Client</span><span>{job.client_name}</span></div><div className="r-row"><span>Job Type</span><span>{job.job_type}</span></div>{job.deadline && <div className="r-row"><span>Deadline</span><span>{job.deadline}</span></div>}<hr /><div className="r-row"><span>Filament Used</span><span>{job.total_grams}g</span></div><div className="r-row"><span>Print Time</span><span>{job.total_hours}h</span></div>{job.parts && <div className="r-row"><span>Parts</span><span style={{ maxWidth: 160, textAlign: "right", wordBreak: "break-word" }}>{job.parts}</span></div>}<hr /><div className="r-row"><span>Printers Used</span><span>{allocations.map((p) => p.printers?.name || p.printer_id).join(", ")}</span></div><div className="r-row"><span>Filament</span><span>{job.filaments?.type} {job.filaments?.color}</span></div><hr /><div className="r-total"><span>TOTAL</span><span>{peso(job.charged_total)}</span></div><div className="sub" style={{ marginTop: 12 }}>Job ID: {String(job.id).toUpperCase().slice(0, 8)}</div></div><div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 24 }}><button className="btn btn-ghost" onClick={() => window.print()}>Print Receipt</button><button className="btn btn-primary" onClick={onNew}>New Job →</button></div></div>;
+  const finalPrice = job.finalPrice;
+  const now = new Date();
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Job Complete</div>
+        <div className="page-sub">Receipt generated for {job.clientName}</div>
+      </div>
+      <div className="receipt">
+        <h2>TechCraft Innovator</h2>
+        <div className="sub">3D Print Receipt</div>
+        <div className="sub">{now.toLocaleDateString()} · {now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</div>
+        <hr />
+        <div className="r-row"><span>Client</span><span>{job.clientName}</span></div>
+        <div className="r-row"><span>Job Type</span><span>{job.jobType}</span></div>
+        {job.deadline && <div className="r-row"><span>Deadline</span><span>{job.deadline}</span></div>}
+        <hr />
+        <div className="r-row"><span>Filament Used</span><span>{job.grams}g</span></div>
+        <div className="r-row"><span>Print Time</span><span>{job.hours}h</span></div>
+        {job.parts && <div className="r-row"><span>Parts</span><span style={{ maxWidth: 160, textAlign: "right", wordBreak: "break-word" }}>{job.parts}</span></div>}
+        <hr />
+        <div className="r-row"><span>Printers Used</span><span>{job.printers.map(p => job.printerDB[p.id]?.name ?? p.id).join(", ")}</span></div>
+        <div className="r-row"><span>Filament</span><span>{job.filament?.type} {job.filament?.color}</span></div>
+        <hr />
+        <div className="r-total"><span>TOTAL</span><span>₱{finalPrice.toFixed(2)}</span></div>
+        <div className="r-center">Thank you for your order!</div>
+        <div className="r-center" style={{ marginTop: 4 }}>Job ID: {String(job.id).toUpperCase().slice(0, 8)}</div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "center", gap: 12, marginTop: 24 }}>
+        <button className="btn btn-ghost" onClick={() => window.print()}>Print Receipt</button>
+        <button className="btn btn-primary" onClick={onNew}>New Job →</button>
+      </div>
+    </div>
+  );
 }
 
-function JobOrdersView({ jobs, setJobs, reload }) {
-  const [filter, setFilter] = useState("all");
-  const [msg, setMsg] = useState("");
-  const shown = jobs.filter((j) => filter === "all" || j.status === filter);
-  const updateJob = async (id, patch) => {
-    const previous = jobs;
-    setJobs((current) => current.map((j) => (j.id === id ? { ...j, ...patch } : j)));
-    const { error } = await supabase.from("jobs").update(patch).eq("id", id);
-    if (error) { setJobs(previous); setMsg(error.message); } else { setMsg("Saved."); await reload(); }
+// ─── INVENTORY VIEW ───────────────────────────────────────────────────────────
+function InventoryView({ filaments, setFilaments, reloadFilaments }) {
+  const [showAddFil, setShowAddFil] = useState(false);
+  const [editFil, setEditFil] = useState(null);
+  const [form, setForm] = useState({ brand: "", type: "PLA", color: "", finish: "matte", price_per_kg: 25, active: true });
+  const [opError, setOpError] = useState("");
+  const [opLoading, setOpLoading] = useState(false);
+
+  const openAdd = () => { setForm({ brand: "", type: "PLA", color: "", finish: "matte", price_per_kg: 25, active: true }); setEditFil(null); setShowAddFil(true); setOpError(""); };
+  const openEdit = (f) => { setForm({ brand: f.brand, type: f.type, color: f.color, finish: f.finish, price_per_kg: f.price_per_kg, active: f.active }); setEditFil(f.id); setShowAddFil(true); setOpError(""); };
+  const openDupe = (f) => { setForm({ brand: f.brand, type: f.type, color: f.color + " (Copy)", finish: f.finish, price_per_kg: f.price_per_kg, active: f.active }); setEditFil(null); setShowAddFil(true); setOpError(""); };
+
+  const saveFilament = async () => {
+    if (!form.brand || !form.color) return;
+    setOpLoading(true);
+    setOpError("");
+    try {
+      if (editFil) {
+        const { error } = await supabase.from("filaments").update({
+          brand: form.brand, type: form.type, color: form.color,
+          finish: form.finish, price_per_kg: Number(form.price_per_kg), active: form.active,
+        }).eq("id", editFil);
+        if (error) throw new Error(error.message);
+      } else {
+        const { error } = await supabase.from("filaments").insert({
+          brand: form.brand, type: form.type, color: form.color,
+          finish: form.finish, price_per_kg: Number(form.price_per_kg), active: true,
+        });
+        if (error) throw new Error(error.message);
+      }
+      await reloadFilaments();
+      setShowAddFil(false);
+    } catch (err) {
+      setOpError(err.message);
+    } finally {
+      setOpLoading(false);
+    }
   };
-  const removeJob = async (id) => {
-    if (!confirm("Delete this saved order?")) return;
-    const { error } = await supabase.from("jobs").delete().eq("id", id);
-    if (error) setMsg(error.message); else await reload();
+
+  const toggleActive = async (f) => {
+    const { error } = await supabase.from("filaments").update({ active: !f.active }).eq("id", f.id);
+    if (!error) setFilaments(prev => prev.map(x => x.id === f.id ? { ...x, active: !x.active } : x));
   };
-  return <div><div className="page-header"><div><div className="page-title">Job Orders</div><div className="page-sub">Pulled directly from the <strong>jobs</strong> table. No duplicate add-order workflow.</div></div><button className="btn btn-ghost" onClick={reload}>Refresh</button></div>{msg && <div className="notice">{msg}</div>}<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>{["all", ...JOB_STATUSES].map((s) => <button key={s} className={`chip ${filter === s ? "selected" : ""}`} onClick={() => setFilter(s)}>{s} {s === "all" ? `(${jobs.length})` : `(${jobs.filter((j) => j.status === s).length})`}</button>)}</div>{shown.length === 0 ? <div className="card" style={{ textAlign: "center", color: T.textMuted }}>No saved jobs found.</div> : <div className="card"><table className="table"><thead><tr><th>Order</th><th>Client</th><th>Filament</th><th>Printers</th><th>Grams / Time</th><th>Total</th><th>Status</th><th>Payment</th><th></th></tr></thead><tbody>{shown.map((j) => <tr key={j.id}><td><div style={{ color: T.text, fontWeight: 600 }}>{j.job_type}</div><div style={{ fontFamily: T.fontMono, fontSize: 11, color: T.textDim }}>{String(j.id).slice(0, 8).toUpperCase()}</div><div style={{ fontSize: 11, color: T.textDim }}>{new Date(j.created_at).toLocaleString()}</div></td><td>{j.client_name}<br />{j.deadline && <span style={{ fontSize: 11, color: T.warn }}>Due {j.deadline}</span>}</td><td>{j.filaments ? `${j.filaments.brand} ${j.filaments.type} ${j.filaments.color}` : "—"}</td><td>{(j.job_printer_allocations || []).map((a) => <div key={a.id || a.printer_id}>{a.printers?.name || a.printer_id} · {a.percentage}%</div>)}</td><td style={{ fontFamily: T.fontMono }}>{j.total_grams}g<br />{j.total_hours}h</td><td style={{ fontFamily: T.fontMono, color: T.text }}>{peso(j.charged_total)}<br /><span style={{ color: T.accent, fontSize: 11 }}>profit {peso(j.profit_total)}</span></td><td><select value={j.status} onChange={(e) => updateJob(j.id, { status: e.target.value })}>{JOB_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</select></td><td><select value={j.payment_status} onChange={(e) => updateJob(j.id, { payment_status: e.target.value })}>{PAYMENT_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}</select></td><td><button className="btn btn-danger" style={{ padding: "5px 10px", fontSize: 11 }} onClick={() => removeJob(j.id)}>Delete</button></td></tr>)}</tbody></table></div>}</div>;
+
+  const removeFilament = async (id) => {
+    const { error } = await supabase.from("filaments").delete().eq("id", id);
+    if (!error) setFilaments(prev => prev.filter(f => f.id !== id));
+  };
+
+  return (
+    <div>
+      <div className="inv-header">
+        <div>
+          <div className="page-title">Filament Inventory</div>
+          <div className="page-sub">{filaments.filter(f => f.active).length} active filaments</div>
+        </div>
+        <button className="btn btn-primary" onClick={openAdd}>+ Add Filament</button>
+      </div>
+      <div className="card">
+        <table className="table">
+          <thead>
+            <tr><th>Filament</th><th>Type</th><th>Finish</th><th>₱/kg</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody>
+            {filaments.map(f => (
+              <tr key={f.id}>
+                <td>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.15)" }} />
+                    <div><div style={{ color: T.text, fontWeight: 500 }}>{f.color}</div><div style={{ fontSize: 11, color: T.textDim }}>{f.brand}</div></div>
+                  </div>
+                </td>
+                <td><span className="badge badge-info">{f.type}</span></td>
+                <td><span className="tag">{f.finish}</span></td>
+                <td style={{ fontFamily: T.fontMono }}>₱{f.price_per_kg}</td>
+                <td>
+                  <span className={`badge ${f.active ? "badge-accent" : ""}`} onClick={() => toggleActive(f)} style={{ cursor: "pointer", ...(f.active ? {} : { background: T.border, color: T.textDim }) }}>
+                    {f.active ? "Active" : "Inactive"}
+                  </span>
+                </td>
+                <td>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(f)}>Edit</button>
+                    <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openDupe(f)}>Dupe</button>
+                    <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => removeFilament(f.id)}>✕</button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showAddFil && (
+        <div className="modal-overlay" onClick={e => e.target === e.currentTarget && setShowAddFil(false)}>
+          <div className="modal">
+            <h3>{editFil ? "Edit Filament" : "Add Filament"}</h3>
+            <div className="input-row">
+              <div className="input-group"><label>Brand</label><input type="text" value={form.brand} onChange={e => setForm(f => ({ ...f, brand: e.target.value }))} placeholder="e.g. Bambu Lab" /></div>
+              <div className="input-group"><label>Color Name</label><input type="text" value={form.color} onChange={e => setForm(f => ({ ...f, color: e.target.value }))} placeholder="e.g. Jade White" /></div>
+            </div>
+            <div className="input-row">
+              <div className="input-group"><label>Type</label>
+                <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}>
+                  {["PLA", "PLA+", "Silk", "PETG"].map(t => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div className="input-group"><label>Finish</label>
+                <select value={form.finish} onChange={e => setForm(f => ({ ...f, finish: e.target.value }))}>
+                  {["matte", "glossy", "silk", "metallic"].map(t => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="input-group"><label>Price per kg (₱)</label><input type="number" value={form.price_per_kg} min={1} onChange={e => setForm(f => ({ ...f, price_per_kg: +e.target.value }))} /></div>
+            {opError && <div className="error-msg" style={{ marginBottom: 8 }}>Error: {opError}</div>}
+            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setShowAddFil(false)} disabled={opLoading}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveFilament} disabled={!form.brand || !form.color || opLoading}>
+                {opLoading ? "Saving…" : "Save"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
-function InventoryView({ filaments, reload }) {
-  const blank = { brand: "", type: "", color: "", finish: "", price_per_kg: "", true_cost_per_kg: "", selling_price_per_kg: "", active: true };
-  const [show, setShow] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState(blank);
-  const [msg, setMsg] = useState("");
-  const openAdd = () => { setForm(blank); setEditId(null); setShow(true); setMsg(""); };
-  const openEdit = (f) => { setForm({ ...f, price_per_kg: String(f.price_per_kg), true_cost_per_kg: String(f.true_cost_per_kg), selling_price_per_kg: String(f.selling_price_per_kg) }); setEditId(f.id); setShow(true); setMsg(""); };
+// ─── PRICING SETTINGS VIEW ───────────────────────────────────────────────────
+function PricingSettingsView({ pricingConfig, setPricingConfig }) {
+  const [draft, setDraft] = useState(pricingConfig);
+  const [testError, setTestError] = useState("");
+  const [testPrice, setTestPrice] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [saveMsg, setSaveMsg] = useState("");
+
+  useEffect(() => { setDraft(pricingConfig); }, [pricingConfig]);
+
+  const update = (key, value) => setDraft(c => ({ ...c, [key]: value }));
+
+  const testFormula = () => {
+    try {
+      const result = _evaluatePricingFormula(draft.formula, {
+        grams: 100, hours: 4,
+        filament_real: 65, filament_charged: 120,
+        electricity_real: 16.8, electricity_charged: 25,
+        printer_real: 80, printer_charged: 150,
+        real_total: 161.8, default_charged_total: 295,
+        markup_multiplier: Number(draft.markup_multiplier || 1),
+        minimum_price: Number(draft.minimum_price || 0),
+      });
+      setTestError("");
+      setTestPrice(Math.max(result, Number(draft.minimum_price || 0)));
+    } catch (err) {
+      setTestPrice(null);
+      setTestError(err.message || "Formula error");
+    }
+  };
+
   const save = async () => {
-    if (!form.brand || !form.type || !form.color || !form.finish || !requiredNumber(form.price_per_kg) || !requiredNumber(form.true_cost_per_kg) || !requiredNumber(form.selling_price_per_kg)) { setMsg("Complete all filament fields."); return; }
-    const payload = { brand: form.brand, type: form.type, color: form.color, finish: form.finish, price_per_kg: Number(form.price_per_kg), true_cost_per_kg: Number(form.true_cost_per_kg), selling_price_per_kg: Number(form.selling_price_per_kg), active: Boolean(form.active) };
-    const { error } = editId ? await supabase.from("filaments").update(payload).eq("id", editId) : await supabase.from("filaments").insert(payload);
-    if (error) setMsg(error.message); else { setShow(false); await reload(); }
+    setSaving(true);
+    setSaveMsg("");
+    const update = {
+      electricity_rate: Number(draft.electricity_rate || 0),
+      minimum_price: Number(draft.minimum_price || 0),
+      markup_multiplier: Number(draft.markup_multiplier || 1),
+      formula: draft.formula,
+      updated_at: new Date().toISOString(),
+    };
+    const { error } = await supabase.from("pricing_settings").update(update).eq("id", "default");
+    if (error) {
+      setSaveMsg(`Error: ${error.message}`);
+    } else {
+      setPricingConfig({ ...update });
+      setSaveMsg("Saved successfully.");
+      testFormula();
+    }
+    setSaving(false);
   };
-  const archive = async (id) => { const { error } = await supabase.from("filaments").update({ active: false }).eq("id", id); if (error) setMsg(error.message); else await reload(); };
-  return <div><div className="page-header"><div><div className="page-title">Filament Inventory</div><div className="page-sub">Your filament database and required cost/selling values.</div></div><button className="btn btn-primary" onClick={openAdd}>+ Add Filament</button></div>{msg && <div className="validation-gate">{msg}</div>}<div className="card"><table className="table"><thead><tr><th>Filament</th><th>Type</th><th>Finish</th><th>Ref ₱/kg</th><th>True ₱/kg</th><th>Sell ₱/kg</th><th>Status</th><th>Actions</th></tr></thead><tbody>{filaments.map((f) => <tr key={f.id}><td><span className="filament-color-dot" style={{ background: getFilColor(f.color), marginRight: 8 }} />{f.color}<br /><span style={{ fontSize: 11, color: T.textDim }}>{f.brand}</span></td><td><span className="badge badge-info">{f.type}</span></td><td>{f.finish}</td><td>{f.price_per_kg}</td><td>{f.true_cost_per_kg}</td><td>{f.selling_price_per_kg}</td><td><span className={f.active ? "badge badge-accent" : "badge"}>{f.active ? "Active" : "Inactive"}</span></td><td><button className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 11 }} onClick={() => openEdit(f)}>Edit</button> <button className="btn btn-danger" style={{ padding: "5px 10px", fontSize: 11 }} onClick={() => archive(f.id)}>Archive</button></td></tr>)}</tbody></table></div>{show && <EditModal title={editId ? "Edit Filament" : "Add Filament"} onClose={() => setShow(false)} onSave={save}>{["brand", "type", "color", "finish", "price_per_kg", "true_cost_per_kg", "selling_price_per_kg"].map((k) => <div className="input-group" key={k}><label>{k}</label><input type={k.includes("kg") ? "number" : "text"} value={form[k] ?? ""} onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))} /></div>)}</EditModal>}</div>;
+
+  return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Pricing Formula</div>
+        <div className="page-sub">Admin-only pricing controls. Not shown on customer receipts.</div>
+      </div>
+      <div className="grid2">
+        <div className="card">
+          <div className="card-title"><span className="card-title-dot" />Editable Formula</div>
+          <div className="input-group">
+            <label>Formula</label>
+            <textarea rows={5} value={draft.formula} onChange={e => update("formula", e.target.value)} style={{ fontFamily: T.fontMono, resize: "vertical" }} />
+            {testError && <div className="error-msg">{testError}</div>}
+          </div>
+          <div className="input-row">
+            <div className="input-group"><label>Markup Multiplier</label><input type="number" step="0.05" value={draft.markup_multiplier} onChange={e => update("markup_multiplier", +e.target.value)} /></div>
+            <div className="input-group"><label>Minimum Price</label><input type="number" step="1" value={draft.minimum_price} onChange={e => update("minimum_price", +e.target.value)} /></div>
+          </div>
+          <div className="input-group">
+            <label>Electricity Rate / kWh (₱)</label>
+            <input type="number" step="0.01" value={draft.electricity_rate} onChange={e => update("electricity_rate", +e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={testFormula}>Test Formula</button>
+            <button className="btn btn-primary" style={{ flex: 1 }} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Pricing"}</button>
+          </div>
+          {saveMsg && (
+            <div style={{ marginTop: 12, padding: "10px 14px", background: saveMsg.startsWith("Error") ? "rgba(255,92,92,0.08)" : T.accentGlow, border: `1px solid ${saveMsg.startsWith("Error") ? "rgba(255,92,92,0.2)" : T.accentDim}`, borderRadius: 8, fontSize: 13, color: saveMsg.startsWith("Error") ? T.danger : T.accent }}>
+              {saveMsg}
+            </div>
+          )}
+          {testPrice !== null && (
+            <div style={{ marginTop: 10, padding: "12px 16px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 9, fontSize: 13, color: T.accent }}>
+              Test output: ₱{testPrice.toFixed(2)} using sample 100g / 4h data.
+            </div>
+          )}
+        </div>
+        <div className="card">
+          <div className="card-title"><span className="card-title-dot" />Allowed Variables</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            {["grams", "hours", "filament_real", "filament_charged", "electricity_real", "electricity_charged", "printer_real", "printer_charged", "real_total", "default_charged_total", "markup_multiplier", "minimum_price"].map(v => (
+              <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>
+            ))}
+          </div>
+          <div style={{ marginTop: 18 }}>
+            <div className="card-title"><span className="card-title-dot" />Examples</div>
+            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Simple markup</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>default_charged_total * markup_multiplier</div></div>
+            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Cost-plus target</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>real_total * 2.2</div></div>
+            <div className="rec-card"><div className="rec-title">Weight and time based</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>(grams * 2.5) + (hours * 35)</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function PrintersView({ printerRows, reload }) {
-  const blank = { id: "", name: "", brand: "", wattage: "", multicolor: false, build_volume: "", base_rate: "", efficiency: "", labor: "", multiplier: "", active: true };
-  const [show, setShow] = useState(false);
-  const [editId, setEditId] = useState(null);
-  const [form, setForm] = useState(blank);
-  const [msg, setMsg] = useState("");
-  const openAdd = () => { setForm(blank); setEditId(null); setShow(true); setMsg(""); };
-  const openEdit = (p) => { setForm(Object.fromEntries(Object.entries({ ...p }).map(([k, v]) => [k, v ?? ""]))); setEditId(p.id); setShow(true); setMsg(""); };
-  const save = async () => {
-    if (!form.id || !form.name || !requiredNumber(form.wattage) || !requiredNumber(form.base_rate) || !requiredNumber(form.efficiency) || !requiredNumber(form.labor) || !requiredNumber(form.multiplier)) { setMsg("Complete required printer fields."); return; }
-    const payload = { id: form.id, name: form.name, brand: form.brand, wattage: Number(form.wattage), multicolor: Boolean(form.multicolor), build_volume: form.build_volume, base_rate: Number(form.base_rate), efficiency: Number(form.efficiency), labor: Number(form.labor), multiplier: Number(form.multiplier), active: Boolean(form.active) };
-    const { error } = editId ? await supabase.from("printers").update(payload).eq("id", editId) : await supabase.from("printers").insert(payload);
-    if (error) setMsg(error.message); else { setShow(false); await reload(); }
-  };
-  return <div><div className="page-header"><div><div className="page-title">Printers</div><div className="page-sub">Edit printer rates used by the cost engine.</div></div><button className="btn btn-primary" onClick={openAdd}>+ Add Printer</button></div>{msg && <div className="validation-gate">{msg}</div>}<div className="card"><table className="table"><thead><tr><th>Printer</th><th>Wattage</th><th>Base Rate</th><th>Efficiency</th><th>Labor</th><th>Multiplier</th><th>Status</th><th></th></tr></thead><tbody>{printerRows.map((p) => <tr key={p.id}><td>{p.name}<br /><span style={{ fontSize: 11, color: T.textDim }}>{p.id} · {p.brand}</span></td><td>{p.wattage}W</td><td>{p.base_rate}</td><td>{p.efficiency}</td><td>{p.labor}</td><td>{p.multiplier}</td><td><span className={p.active ? "badge badge-accent" : "badge"}>{p.active ? "Active" : "Inactive"}</span></td><td><button className="btn btn-ghost" style={{ padding: "5px 10px", fontSize: 11 }} onClick={() => openEdit(p)}>Edit</button></td></tr>)}</tbody></table></div>{show && <EditModal title={editId ? "Edit Printer" : "Add Printer"} onClose={() => setShow(false)} onSave={save}>{["id", "name", "brand", "wattage", "build_volume", "base_rate", "efficiency", "labor", "multiplier"].map((k) => <div className="input-group" key={k}><label>{k}</label><input type={["wattage", "base_rate", "efficiency", "labor", "multiplier"].includes(k) ? "number" : "text"} value={form[k] ?? ""} disabled={editId && k === "id"} onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))} /></div>)}<label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={Boolean(form.multicolor)} onChange={(e) => setForm((f) => ({ ...f, multicolor: e.target.checked }))} style={{ width: "auto" }} /> Multicolor capable</label></EditModal>}</div>;
+// ─── JOB ORDERS VIEW ──────────────────────────────────────────────────────────
+function JobsView({ jobs, onRefresh, onUpdateJobField }) {
+  if (jobs.length === 0) return (
+    <div>
+      <div className="page-header">
+        <div className="page-title">Job Orders</div>
+        <div className="page-sub">Orders are pulled directly from the jobs table.</div>
+      </div>
+      <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
+        <div style={{ fontSize: 32, marginBottom: 12 }}>◷</div>
+        <div style={{ fontSize: 14, color: T.textMuted }}>No saved jobs in database yet</div>
+        <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Create an order using New Job. It will appear here automatically.</div>
+        <button className="btn btn-ghost" style={{ marginTop: 18 }} onClick={onRefresh}>Refresh Orders</button>
+      </div>
+    </div>
+  );
+
+  const total = jobs.reduce((s, j) => s + Number(j.finalPrice || 0), 0);
+  const totalProfit = jobs.reduce((s, j) => s + Number(j.cost?.totals?.profit ?? 0), 0);
+  const statusList = ["pending", "queued", "printing", "post-processing", "done", "cancelled"];
+  const paymentList = ["unpaid", "partial", "paid", "refunded"];
+
+  return (
+    <div>
+      <div className="inv-header">
+        <div>
+          <div className="page-title">Job Orders</div>
+          <div className="page-sub">{jobs.length} saved jobs from database</div>
+        </div>
+        <button className="btn btn-ghost" onClick={onRefresh}>Refresh Orders</button>
+      </div>
+
+      <div className="grid2" style={{ marginBottom: 20 }}>
+        <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-val">₱{total.toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Profit</div><div className="stat-val stat-profit">₱{totalProfit.toFixed(2)}</div></div>
+      </div>
+
+      <div className="card">
+        <table className="table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Date</th><th>Client</th><th>Type</th><th>Filament</th><th>Printers</th><th>Params</th><th>Revenue</th><th>Status</th><th>Payment</th>
+            </tr>
+          </thead>
+          <tbody>
+            {jobs.map(j => {
+              const printerNames = (j.printers || []).map((p) => j.printerDB?.[p.id]?.name ? `${j.printerDB[p.id].name} ${p.pct}%` : `${p.id} ${p.pct}%`).join(", ");
+              return (
+                <tr key={j.id}>
+                  <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{String(j.id).slice(0, 8).toUpperCase()}</td>
+                  <td>{j.date}</td>
+                  <td style={{ fontWeight: 500, color: T.text }}>{j.clientName}</td>
+                  <td><span className="tag">{j.jobType}</span></td>
+                  <td>{j.filament ? `${j.filament.brand} ${j.filament.type} ${j.filament.color}` : "—"}</td>
+                  <td style={{ maxWidth: 210, whiteSpace: "normal" }}>{printerNames || "—"}</td>
+                  <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.grams}g · {j.hours}h</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.text }}>₱{Number(j.finalPrice || 0).toFixed(2)}</td>
+                  <td>
+                    <select value={j.status || "pending"} onChange={(e) => onUpdateJobField(j.id, "status", e.target.value)} style={{ minWidth: 120 }}>
+                      {statusList.map((status) => <option key={status} value={status}>{status}</option>)}
+                    </select>
+                  </td>
+                  <td>
+                    <select value={j.paymentStatus || "unpaid"} onChange={(e) => onUpdateJobField(j.id, "payment_status", e.target.value)} style={{ minWidth: 100 }}>
+                      {paymentList.map((status) => <option key={status} value={status}>{status}</option>)}
+                    </select>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
-function PricingSettingsView({ pricingConfig, setPricingConfig, reload }) {
-  const [draft, setDraft] = useState(pricingConfig || EMPTY_PRICING_CONFIG);
-  const [msg, setMsg] = useState("");
-  useEffect(() => setDraft(pricingConfig || EMPTY_PRICING_CONFIG), [pricingConfig]);
-  const save = async () => {
-    if (!requiredNumber(draft.electricity_rate) || !requiredNumber(draft.minimum_price) || !requiredNumber(draft.markup_multiplier) || !draft.formula) { setMsg("Complete all pricing fields."); return; }
-    const payload = { id: "default", electricity_rate: Number(draft.electricity_rate), minimum_price: Number(draft.minimum_price), markup_multiplier: Number(draft.markup_multiplier), formula: draft.formula };
-    const { data, error } = await supabase.from("pricing_settings").upsert(payload, { onConflict: "id" }).select().single();
-    if (error) setMsg(error.message); else { setPricingConfig(data); setMsg("Pricing saved."); await reload(); }
-  };
-  return <div><div className="page-header"><div><div className="page-title">Pricing Formula</div><div className="page-sub">Admin-only pricing controls. Not shown on customer receipts.</div></div></div>{msg && <div className={msg.includes("saved") ? "notice" : "validation-gate"}>{msg}</div>}<div className="grid2"><div className="card"><div className="card-title"><span className="card-title-dot" />Settings</div><div className="input-group"><label>Formula</label><textarea rows={5} value={draft.formula || ""} onChange={(e) => setDraft((d) => ({ ...d, formula: e.target.value }))} style={{ fontFamily: T.fontMono }} /></div><div className="input-row"><div className="input-group"><label>Electricity Rate / kWh</label><input type="number" value={draft.electricity_rate ?? ""} onChange={(e) => setDraft((d) => ({ ...d, electricity_rate: e.target.value }))} /></div><div className="input-group"><label>Minimum Price</label><input type="number" value={draft.minimum_price ?? ""} onChange={(e) => setDraft((d) => ({ ...d, minimum_price: e.target.value }))} /></div></div><div className="input-group"><label>Markup Multiplier</label><input type="number" value={draft.markup_multiplier ?? ""} onChange={(e) => setDraft((d) => ({ ...d, markup_multiplier: e.target.value }))} /></div><button className="btn btn-primary" onClick={save}>Save Pricing</button></div><div className="card"><div className="card-title"><span className="card-title-dot" />Allowed Variables</div>{["grams", "hours", "filament_real", "filament_charged", "electricity_real", "electricity_charged", "printer_real", "printer_charged", "real_total", "default_charged_total", "machine_rate", "power_kw", "electricity_rate", "printer_multiplier", "efficiency_modifier", "labor_factor", "markup_multiplier", "minimum_price"].map((v) => <span key={v} className="tag" style={{ display: "inline-block", marginBottom: 8, fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>)}</div></div></div>;
-}
-
+// ─── ANALYTICS VIEW ───────────────────────────────────────────────────────────
 function AnalyticsView({ jobs }) {
-  const totalRev = jobs.reduce((s, j) => s + Number(j.charged_total || 0), 0);
-  const totalCost = jobs.reduce((s, j) => s + Number(j.real_total || 0), 0);
-  const totalProfit = jobs.reduce((s, j) => s + Number(j.profit_total || 0), 0);
-  const avgMargin = totalRev > 0 ? (totalProfit / totalRev) * 100 : 0;
-  return <div><div className="page-header"><div><div className="page-title">Analytics</div><div className="page-sub">Based on saved jobs from the database.</div></div></div><div className="grid4"><div className="stat-card"><div className="stat-label">Orders</div><div className="stat-val">{jobs.length}</div></div><div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-val">{peso(totalRev)}</div></div><div className="stat-card"><div className="stat-label">Real Cost</div><div className="stat-val">{peso(totalCost)}</div></div><div className="stat-card"><div className="stat-label">Profit</div><div className="stat-val" style={{ color: T.accent }}>{peso(totalProfit)}</div><div className="stat-sub">{pct(avgMargin)} margin</div></div></div></div>;
-}
-
-function EditModal({ title, children, onClose, onSave }) {
-  return <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}><div className="modal"><h3>{title}</h3>{children}<div style={{ display: "flex", gap: 10, marginTop: 16 }}><button className="btn btn-ghost" style={{ flex: 1 }} onClick={onClose}>Cancel</button><button className="btn btn-primary" style={{ flex: 1 }} onClick={onSave}>Save</button></div></div></div>;
+  if (jobs.length === 0) return (
+    <div>
+      <div className="page-header"><div className="page-title">Analytics</div></div>
+      <div className="card" style={{ textAlign: "center", padding: "48px" }}>
+        <div style={{ fontSize: 14, color: T.textMuted }}>Complete jobs to see analytics</div>
+      </div>
+    </div>
+  );
+  const totalRev = jobs.reduce((s, j) => s + j.finalPrice, 0);
+  const totalCost = jobs.reduce((s, j) => s + (j.cost?.totals.real ?? 0), 0);
+  const totalProfit = jobs.reduce((s, j) => s + (j.cost?.totals.profit ?? 0), 0);
+  const avgMargin = jobs.reduce((s, j) => s + (j.cost?.totals.margin ?? 0), 0) / jobs.length;
+  const byType = {};
+  jobs.forEach(j => { byType[j.jobType] = (byType[j.jobType] || 0) + 1; });
+  const maxTypeCount = Math.max(...Object.values(byType));
+  const filamentProfit = jobs.reduce((s, j) => s + (j.cost?.filament.profit ?? 0), 0);
+  const elecProfit = jobs.reduce((s, j) => s + (j.cost?.electricity.profit ?? 0), 0);
+  const printerProfit = jobs.reduce((s, j) => s + (j.cost?.printer_usage.profit ?? 0), 0);
+  const maxProfit2 = Math.max(filamentProfit, elecProfit, printerProfit);
+  return (
+    <div>
+      <div className="page-header"><div className="page-title">Analytics</div><div className="page-sub">Profit engine summary</div></div>
+      <div className="grid4" style={{ marginBottom: 20 }}>
+        <div className="stat-card"><div className="stat-label">Revenue</div><div className="stat-val">₱{totalRev.toFixed(0)}</div></div>
+        <div className="stat-card"><div className="stat-label">Real Cost</div><div className="stat-val">₱{totalCost.toFixed(0)}</div></div>
+        <div className="stat-card"><div className="stat-label">Total Profit</div><div className="stat-val stat-profit">₱{totalProfit.toFixed(0)}</div></div>
+        <div className="stat-card"><div className="stat-label">Avg Margin</div><div className="stat-val">{avgMargin.toFixed(1)}%</div></div>
+      </div>
+      <div className="grid2">
+        <div className="card">
+          <div className="card-title"><span className="card-title-dot" />Profit by Component</div>
+          {[["Filament", filamentProfit], ["Electricity", elecProfit], ["Printer Usage", printerProfit]].map(([label, val]) => (
+            <div key={label} className="profit-bar-wrap">
+              <span className="profit-bar-label">{label}</span>
+              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${maxProfit2 > 0 ? (val / maxProfit2 * 100) : 0}%`, background: T.accent }} /></div>
+              <span className="profit-bar-val">₱{val.toFixed(2)}</span>
+            </div>
+          ))}
+        </div>
+        <div className="card">
+          <div className="card-title"><span className="card-title-dot" />Jobs by Type</div>
+          {Object.entries(byType).map(([t, c]) => (
+            <div key={t} className="profit-bar-wrap">
+              <span className="profit-bar-label" style={{ fontSize: 11 }}>{t}</span>
+              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(c / maxTypeCount * 100)}%`, background: T.purple }} /></div>
+              <span className="profit-bar-val" style={{ color: T.purple }}>{c}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
