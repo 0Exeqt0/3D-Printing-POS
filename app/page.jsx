@@ -39,6 +39,7 @@ function dbPrinterToInternal(row) {
     id: row.id,
     name: row.name,
     brand: row.brand,
+    model: row.model,
     wattage: Number(row.wattage),
     multicolor: row.multicolor,
     buildVol: row.build_volume,
@@ -117,16 +118,11 @@ function _computeEngine(job, PRINTER_DB) {
 
   try {
     const formulaVariables = {
-      grams,
-      hours,
-      filament_real: filamentReal,
-      filament_charged: filamentCharged,
-      electricity_real: elecReal,
-      electricity_charged: elecCharged,
-      printer_real: printerReal,
-      printer_charged: printerCharged,
-      real_total: totalReal,
-      default_charged_total: defaultChargedTotal,
+      grams, hours,
+      filament_real: filamentReal, filament_charged: filamentCharged,
+      electricity_real: elecReal, electricity_charged: elecCharged,
+      printer_real: printerReal, printer_charged: printerCharged,
+      real_total: totalReal, default_charged_total: defaultChargedTotal,
       markup_multiplier: Number(pricingConfig.markup_multiplier || 1),
       minimum_price: Number(pricingConfig.minimum_price || 0),
       electricity_rate: Number(pricingConfig.electricity_rate || 0),
@@ -135,21 +131,13 @@ function _computeEngine(job, PRINTER_DB) {
       true_cost_per_kg: trueCostKg,
       selling_price_per_kg: sellingKg > 0 ? sellingKg : trueCostKg,
       elec_kwh: elecKwh,
-      // Common aliases
-      machine_rate: printerReal,
-      machine_charged: printerCharged,
-      filament_cost: filamentReal,
-      filament_price: filamentCharged,
-      electricity_cost: elecReal,
-      electricity_price: elecCharged,
+      machine_rate: printerReal, machine_charged: printerCharged,
+      filament_cost: filamentReal, filament_price: filamentCharged,
+      electricity_cost: elecReal, electricity_price: elecCharged,
       total_cost: totalReal,
-      // Power/wattage aliases
       power_kw: hours > 0 ? elecKwh / hours : 0,
-      power_kwh: elecKwh,
-      watt_hours: elecKwh * 1000,
-      print_hours: hours,
-      print_grams: grams,
-      labor_cost: printerCharged,
+      power_kwh: elecKwh, watt_hours: elecKwh * 1000,
+      print_hours: hours, print_grams: grams, labor_cost: printerCharged,
     };
     const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, formulaVariables);
     if (formulaPrice !== null) computedChargedTotal = formulaPrice;
@@ -176,9 +164,7 @@ function _computeEngine(job, PRINTER_DB) {
     per_printer: perPrinterBreakdown,
     formula_error: formulaError,
     recommendation: { lowest_cost: lowestCost, fastest, highest_profit: highestProfit },
-    _grams: grams,
-    _hours: hours,
-    _elecKwh: elecKwh,
+    _grams: grams, _hours: hours, _elecKwh: elecKwh,
   };
 }
 
@@ -193,14 +179,10 @@ function getFilColor(colorName) {
 }
 
 const STEPS = [
-  { id: 1, label: "Job Type" },
-  { id: 2, label: "Printers" },
-  { id: 3, label: "Filament" },
-  { id: 4, label: "Parameters" },
-  { id: 5, label: "Cost Engine" },
-  { id: 6, label: "Pricing" },
-  { id: 7, label: "Metadata" },
-  { id: 8, label: "Confirm" },
+  { id: 1, label: "Job Type" }, { id: 2, label: "Printers" },
+  { id: 3, label: "Filament" }, { id: 4, label: "Parameters" },
+  { id: 5, label: "Cost Engine" }, { id: 6, label: "Pricing" },
+  { id: 7, label: "Metadata" }, { id: 8, label: "Confirm" },
 ];
 
 const JOB_TYPES = ["Standard Print", "Prototype", "Production Run", "Multicolor", "Functional Part", "Display Model"];
@@ -234,7 +216,6 @@ body, #root { background: ${T.bg}; min-height: 100vh; font-family: ${T.fontSans}
 .card { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 14px; padding: 24px; margin-bottom: 20px; }
 .card-title { font-size: 13px; font-weight: 600; color: ${T.textMuted}; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
 .card-title-dot { width: 6px; height: 6px; border-radius: 50%; background: ${T.accent}; flex-shrink: 0; }
-.section-divider { border: none; border-top: 1px solid ${T.border}; margin: 20px 0; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 .grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; }
@@ -260,6 +241,7 @@ input[type=text], input[type=number], input[type=date], select, textarea {
 input:focus, select:focus, textarea:focus { border-color: ${T.accent}; }
 input[type=range] { -webkit-appearance: none; width: 100%; height: 4px; background: ${T.border}; border-radius: 2px; border: none; padding: 0; }
 input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: ${T.accent}; cursor: pointer; }
+input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color: ${T.accent}; }
 .input-group { margin-bottom: 14px; }
 .input-row { display: flex; gap: 12px; margin-bottom: 14px; }
 .input-row .input-group { flex: 1; margin-bottom: 0; }
@@ -267,8 +249,6 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .input-suffix { padding: 9px 10px; background: ${T.bgInput}; border: 1px solid ${T.border}; border-left: none; border-radius: 0 8px 8px 0; font-size: 12px; color: ${T.textMuted}; white-space: nowrap; }
 .input-prefix { padding: 9px 10px; background: ${T.bgInput}; border: 1px solid ${T.border}; border-right: none; border-radius: 8px 0 0 8px; font-size: 12px; color: ${T.textMuted}; }
 .input-addon input { border-radius: 0; }
-.slider-row { display: flex; align-items: center; gap: 12px; }
-.slider-val { font-family: ${T.fontMono}; font-size: 13px; color: ${T.accent}; min-width: 48px; text-align: right; }
 .btn { padding: 10px 20px; border-radius: 9px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: ${T.fontSans}; }
 .btn-primary { background: ${T.accent}; color: #000; }
 .btn-primary:hover { background: #00f5ae; transform: translateY(-1px); }
@@ -310,7 +290,7 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .receipt .r-total { display: flex; justify-content: space-between; font-size: 14px; font-weight: 700; margin-top: 8px; }
 .receipt .r-center { text-align: center; font-size: 11px; color: #888; margin-top: 12px; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
-.modal { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 16px; padding: 28px; width: 480px; max-width: 90vw; }
+.modal { background: ${T.bgCard}; border: 1px solid ${T.border}; border-radius: 16px; padding: 28px; width: 560px; max-width: 90vw; max-height: 90vh; overflow-y: auto; }
 .modal h3 { font-size: 16px; font-weight: 600; margin-bottom: 20px; }
 .page-header { margin-bottom: 28px; }
 .page-title { font-size: 24px; font-weight: 600; color: ${T.text}; }
@@ -342,9 +322,6 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px;
 .check-icon { color: ${T.accent}; font-size: 14px; margin-top: 1px; flex-shrink: 0; }
 .check-label { font-size: 12px; color: ${T.textMuted}; }
 .check-val { font-size: 13px; color: ${T.text}; font-weight: 500; margin-top: 2px; }
-.tab-row { display: flex; gap: 4px; margin-bottom: 24px; }
-.tab { padding: 7px 14px; border-radius: 7px; font-size: 12px; font-weight: 500; cursor: pointer; border: 1px solid ${T.border}; color: ${T.textMuted}; background: transparent; transition: all 0.15s; }
-.tab.active { background: ${T.accentGlow}; border-color: ${T.accent}; color: ${T.accent}; }
 select option { background: ${T.bgCard}; }
 .loading-screen { display: flex; align-items: center; justify-content: center; height: 100vh; flex-direction: column; gap: 14px; }
 .loading-spinner { width: 32px; height: 32px; border: 2px solid ${T.border}; border-top-color: ${T.accent}; border-radius: 50%; animation: spin 0.7s linear infinite; }
@@ -370,37 +347,45 @@ select option { background: ${T.bgCard}; }
 .params-field-info { flex: 1; min-width: 0; }
 .params-field-name { font-size: 13px; color: ${T.text}; font-weight: 500; display: flex; align-items: center; gap: 8px; }
 .params-field-sub { font-size: 11px; color: ${T.textDim}; margin-top: 2px; font-family: ${T.fontMono}; }
-.params-field-input { width: 130px; flex-shrink: 0; }
 .confirm-modal { background: ${T.bgCard}; border: 1px solid rgba(255,92,92,0.3); border-radius: 16px; padding: 28px; width: 400px; max-width: 90vw; }
 .confirm-modal h3 { font-size: 16px; font-weight: 600; color: ${T.text}; margin-bottom: 10px; }
 .confirm-modal p { font-size: 13px; color: ${T.textMuted}; margin-bottom: 20px; line-height: 1.5; }
+.printer-inv-card { background: ${T.bgInput}; border: 1.5px solid ${T.border}; border-radius: 12px; padding: 16px 18px; transition: border-color 0.15s; }
+.printer-inv-card:hover { border-color: ${T.borderHi}; }
+.printer-rate-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid ${T.border}; }
+.printer-rate-item { text-align: center; }
+.printer-rate-label { font-size: 10px; color: ${T.textDim}; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
+.printer-rate-val { font-size: 13px; font-weight: 600; color: ${T.text}; font-family: ${T.fontMono}; }
+.section-hint { font-size: 11px; color: ${T.textDim}; padding: 8px 12px; background: rgba(255,255,255,0.02); border-radius: 7px; border: 1px solid ${T.border}; margin-bottom: 16px; line-height: 1.5; }
+.toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid ${T.border}; }
+.toggle-row:last-child { border-bottom: none; }
+.toggle-label { font-size: 13px; color: ${T.text}; }
+.toggle-sub { font-size: 11px; color: ${T.textDim}; margin-top: 2px; }
 
 @media (max-width: 860px) {
   body, #root { min-height: 100dvh; }
   .app { display: block; height: auto; min-height: 100dvh; overflow: visible; padding-bottom: 76px; }
   .sidebar { position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 80; width: 100%; min-width: 0; height: 68px; border-right: none; border-top: 1px solid ${T.border}; flex-direction: row; box-shadow: 0 -12px 30px rgba(0,0,0,0.28); }
   .logo, .nav-label, .nav-bottom { display: none; }
-  .nav-section { width: 100%; display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; padding: 8px; }
-  .nav-item { justify-content: center; text-align: center; font-size: 10px; line-height: 1.1; padding: 8px 4px; margin: 0; border-radius: 12px; min-height: 48px; }
+  .nav-section { width: 100%; display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 8px; }
+  .nav-item { justify-content: center; text-align: center; font-size: 9px; line-height: 1.1; padding: 6px 2px; margin: 0; border-radius: 10px; min-height: 48px; }
   .nav-dot { display: none; }
   .main { padding: 16px; overflow: visible; }
   .page-title { font-size: 22px; }
   .page-header { margin-bottom: 18px; }
   .stepper { overflow-x: auto; padding-bottom: 8px; margin-bottom: 18px; scrollbar-width: none; }
   .stepper::-webkit-scrollbar { display: none; }
-  .step-circle { width: 30px; height: 30px; }
-  .step-connector { width: 14px; }
   .card { padding: 16px; border-radius: 18px; margin-bottom: 14px; }
   .grid2, .grid3, .grid4 { grid-template-columns: 1fr !important; }
   .input-row { flex-direction: column; gap: 0; }
   .btn-row { position: sticky; bottom: 78px; z-index: 20; background: linear-gradient(180deg, rgba(13,15,20,0), ${T.bg} 22%); padding-top: 18px; gap: 10px; }
   .btn-row .btn { min-height: 44px; }
-  .filament-card, .chip-printer, .chip { border-radius: 14px; }
-  .table { min-width: 720px; }
-  .card:has(.table) { overflow-x: auto; }
   .modal-overlay { align-items: flex-end; }
   .modal, .confirm-modal { width: 100%; max-width: none; border-radius: 20px 20px 0 0; padding: 22px; }
   .receipt { max-width: 100%; }
+  .table { min-width: 820px; }
+  .card:has(.table) { overflow-x: auto; }
+  .printer-rate-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media print {
@@ -426,8 +411,7 @@ export default function App() {
 
   useEffect(() => {
     async function loadAll() {
-      setDbLoading(true);
-      setDbError("");
+      setDbLoading(true); setDbError("");
       try {
         const [
           { data: filData, error: filErr },
@@ -454,14 +438,12 @@ export default function App() {
         setPrinterDB(dbMap);
         if (ordersData) setJobOrders(ordersData);
         if (jobsData) setDbJobs(jobsData);
-        if (psData) {
-          setPricingConfig({
-            electricity_rate: Number(psData.electricity_rate),
-            minimum_price: Number(psData.minimum_price),
-            markup_multiplier: Number(psData.markup_multiplier),
-            formula: psData.formula,
-          });
-        }
+        if (psData) setPricingConfig({
+          electricity_rate: Number(psData.electricity_rate),
+          minimum_price: Number(psData.minimum_price),
+          markup_multiplier: Number(psData.markup_multiplier),
+          formula: psData.formula,
+        });
       } catch (err) {
         setDbError(err.message || "Failed to load data from database.");
       } finally {
@@ -484,6 +466,18 @@ export default function App() {
       for (const row of (data || [])) dbMap[row.id] = dbPrinterToInternal(row);
       setPrinterDB(dbMap);
     }
+  }, []);
+
+  const reloadAllPrinters = useCallback(async () => {
+    const { data, error } = await supabase.from("printers").select("*").order("name");
+    if (!error) {
+      setPrinterRows(data?.filter(p => p.active) || []);
+      const dbMap = {};
+      for (const row of (data || [])) if (row.active) dbMap[row.id] = dbPrinterToInternal(row);
+      setPrinterDB(dbMap);
+      return data || [];
+    }
+    return [];
   }, []);
 
   const [jobType, setJobType] = useState("");
@@ -568,25 +562,16 @@ export default function App() {
 
   const finalizeJob = async () => {
     if (!costResult) return;
-    setSaving(true);
-    setSaveError("");
+    setSaving(true); setSaveError("");
     const finalPrice = customPrice ?? costResult.totals.charged;
     try {
       const { data: jobData, error: jobErr } = await supabase.from("jobs").insert({
-        client_name: clientName,
-        job_type: jobType,
-        filament_id: selectedFil.id,
-        parts,
-        total_grams: Number(grams),
-        total_hours: Number(hours),
-        charged_total: finalPrice,
-        real_total: costResult.totals.real,
-        profit_total: costResult.totals.profit,
-        deadline: deadline || null,
-        notes: notes || null,
-        cost_result: costResult,
-        payment_status: "unpaid",
-        status: "pending",
+        client_name: clientName, job_type: jobType, filament_id: selectedFil.id,
+        parts, total_grams: Number(grams), total_hours: Number(hours),
+        charged_total: finalPrice, real_total: costResult.totals.real,
+        profit_total: costResult.totals.profit, deadline: deadline || null,
+        notes: notes || null, cost_result: costResult,
+        payment_status: "unpaid", status: "pending",
       }).select().single();
       if (jobErr) throw new Error(jobErr.message);
 
@@ -596,19 +581,14 @@ export default function App() {
         if (allocErr) console.warn("Printer alloc error:", allocErr.message);
       }
 
-      // Mark linked job order as Done
       if (activeOrderId) {
         await supabase.from("job_orders").update({ status: "Done", updated_at: new Date().toISOString() }).eq("id", activeOrderId);
         setJobOrders((prev) => prev.map((o) => o.id === activeOrderId ? { ...o, status: "Done" } : o));
       }
 
-      // Reload jobs from DB so history/analytics survive refresh
       await reloadDbJobs();
-
-      // Also keep in-session list for immediate receipt display
       const job = {
-        id: jobData.id,
-        date: new Date().toLocaleDateString(),
+        id: jobData.id, date: new Date().toLocaleDateString(),
         jobType, clientName, deadline, notes, parts, grams, hours,
         filament: selectedFil, printers: selectedPrinters, printerDB,
         cost: costResult, finalPrice,
@@ -653,7 +633,6 @@ export default function App() {
     setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
   };
 
-
   if (dbLoading) {
     return (
       <>
@@ -681,7 +660,8 @@ export default function App() {
               { id: "pos", label: "New Job" },
               { id: "orders", label: "Job Orders" },
               { id: "jobs", label: "Job History" },
-              { id: "inventory", label: "Filament Inventory" },
+              { id: "inventory", label: "Filaments" },
+              { id: "printers", label: "Printers" },
               { id: "parameters", label: "Parameters" },
               { id: "analytics", label: "Analytics" },
               { id: "settings", label: "Pricing" },
@@ -694,7 +674,7 @@ export default function App() {
           </div>
           <div className="nav-bottom">
             <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{completedJobs.length} jobs this session</div>
-            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>{filaments.filter((f) => f.active).length} active filaments</div>
+            <div style={{ fontSize: 11, color: T.textDim, marginTop: 2 }}>{filaments.filter((f) => f.active).length} filaments · {printerRows.length} printers</div>
           </div>
         </aside>
 
@@ -719,6 +699,7 @@ export default function App() {
           )}
           {view === "pos" && showReceipt && completedJobs[0] && <ReceiptView job={completedJobs[0]} onNew={resetJob} />}
           {view === "inventory" && <InventoryView filaments={filaments} setFilaments={setFilaments} reloadFilaments={reloadFilaments} />}
+          {view === "printers" && <PrinterInventoryView printerRows={printerRows} reloadAllPrinters={reloadAllPrinters} setPrinterRows={setPrinterRows} setPrinterDB={setPrinterDB} />}
           {view === "parameters" && (
             <ParametersView
               filaments={filaments} printerRows={printerRows} printerDB={printerDB}
@@ -743,8 +724,394 @@ export default function App() {
   );
 }
 
+// ─── PRINTER INVENTORY VIEW ───────────────────────────────────────────────────
+function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, setPrinterDB }) {
+  const EMPTY_FORM = {
+    name: "", brand: "", model: "", wattage: 200,
+    build_volume: "", multicolor: false, active: true,
+    base_rate: 5, efficiency: 1.2, labor: 1.0, multiplier: 1.5,
+  };
+
+  const [allPrinters, setAllPrinters] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [editPrinter, setEditPrinter] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [opError, setOpError] = useState("");
+  const [opLoading, setOpLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [showInactive, setShowInactive] = useState(false);
+
+  // Load all printers (including inactive) for this view
+  useEffect(() => {
+    loadPrinters();
+  }, []);
+
+  const loadPrinters = async () => {
+    const { data, error } = await supabase.from("printers").select("*").order("name");
+    if (!error && data) setAllPrinters(data);
+  };
+
+  const refreshAll = async () => {
+    await loadPrinters();
+    // Also reload active printers for POS
+    const { data } = await supabase.from("printers").select("*").eq("active", true).order("name");
+    if (data) {
+      setPrinterRows(data);
+      const dbMap = {};
+      for (const row of data) dbMap[row.id] = dbPrinterToInternal(row);
+      setPrinterDB(dbMap);
+    }
+  };
+
+  const openAdd = () => {
+    setForm(EMPTY_FORM);
+    setEditPrinter(null);
+    setShowForm(true);
+    setOpError("");
+  };
+
+  const openEdit = (p) => {
+    setForm({
+      name: p.name, brand: p.brand || "", model: p.model || "",
+      wattage: p.wattage, build_volume: p.build_volume || "",
+      multicolor: p.multicolor, active: p.active,
+      base_rate: p.base_rate, efficiency: p.efficiency,
+      labor: p.labor, multiplier: p.multiplier,
+    });
+    setEditPrinter(p);
+    setShowForm(true);
+    setOpError("");
+  };
+
+  const openDupe = (p) => {
+    setForm({
+      name: p.name + " (Copy)", brand: p.brand || "", model: p.model || "",
+      wattage: p.wattage, build_volume: p.build_volume || "",
+      multicolor: p.multicolor, active: true,
+      base_rate: p.base_rate, efficiency: p.efficiency,
+      labor: p.labor, multiplier: p.multiplier,
+    });
+    setEditPrinter(null);
+    setShowForm(true);
+    setOpError("");
+  };
+
+  const savePrinter = async () => {
+    if (!form.name.trim()) { setOpError("Printer name is required."); return; }
+    if (!form.wattage || Number(form.wattage) <= 0) { setOpError("Wattage must be greater than 0."); return; }
+    setOpLoading(true); setOpError("");
+
+    const payload = {
+      name: form.name.trim(),
+      brand: form.brand.trim() || null,
+      model: form.model.trim() || null,
+      wattage: Number(form.wattage),
+      build_volume: form.build_volume.trim() || null,
+      multicolor: !!form.multicolor,
+      active: !!form.active,
+      base_rate: Number(form.base_rate) || 0,
+      efficiency: Number(form.efficiency) || 1,
+      labor: Number(form.labor) || 1,
+      multiplier: Number(form.multiplier) || 1,
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      if (editPrinter) {
+        const { error } = await supabase.from("printers").update(payload).eq("id", editPrinter.id);
+        if (error) throw new Error(error.message);
+      } else {
+        const { error } = await supabase.from("printers").insert({
+          ...payload, created_at: new Date().toISOString(),
+        });
+        if (error) throw new Error(error.message);
+      }
+      await refreshAll();
+      setShowForm(false);
+      setEditPrinter(null);
+      setForm(EMPTY_FORM);
+    } catch (err) {
+      setOpError(err.message || "Failed to save printer.");
+    } finally {
+      setOpLoading(false);
+    }
+  };
+
+  const toggleActive = async (p) => {
+    const { error } = await supabase.from("printers").update({ active: !p.active, updated_at: new Date().toISOString() }).eq("id", p.id);
+    if (!error) await refreshAll();
+  };
+
+  const executeDelete = async () => {
+    if (!confirmDelete) return;
+    setDeleteLoading(true);
+    const id = confirmDelete.id;
+    setConfirmDelete(null);
+    try {
+      const { error } = await supabase.from("printers").delete().eq("id", id);
+      if (error) {
+        setOpError(`Cannot delete "${confirmDelete.name}": ${error.message}. Remove associated job allocations first.`);
+      } else {
+        await refreshAll();
+      }
+    } catch (err) {
+      setOpError(err.message || "Failed to delete printer.");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const displayed = allPrinters.filter(p => showInactive ? true : p.active);
+  const activeCount = allPrinters.filter(p => p.active).length;
+
+  return (
+    <div>
+      <div className="inv-header">
+        <div>
+          <div className="page-title">Printer Inventory</div>
+          <div className="page-sub">{activeCount} active · {allPrinters.length} total printers</div>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: T.textMuted, cursor: "pointer", margin: 0 }}>
+            <input type="checkbox" checked={showInactive} onChange={e => setShowInactive(e.target.checked)} style={{ width: 14, height: 14 }} />
+            Show inactive
+          </label>
+          <button className="btn btn-primary" onClick={openAdd}>+ Add Printer</button>
+        </div>
+      </div>
+
+      {opError && (
+        <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>
+          {opError}
+          <button onClick={() => setOpError("")} style={{ marginLeft: 12, background: "none", border: "none", color: T.danger, cursor: "pointer", fontSize: 13 }}>✕</button>
+        </div>
+      )}
+
+      <div className="section-hint">
+        <strong style={{ color: T.text }}>Rate fields explained:</strong>{" "}
+        <span style={{ color: T.textMuted }}>
+          <strong style={{ color: T.info }}>Base Rate</strong> = ₱/hr machine cost ·{" "}
+          <strong style={{ color: T.info }}>Efficiency</strong> = electricity markup multiplier ·{" "}
+          <strong style={{ color: T.info }}>Labor</strong> = labor fee multiplier on machine rate ·{" "}
+          <strong style={{ color: T.info }}>Markup</strong> = final profit multiplier applied to printer cost
+        </span>
+      </div>
+
+      {displayed.length === 0 ? (
+        <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>🖨️</div>
+          <div style={{ fontSize: 14, color: T.textMuted }}>No printers found</div>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Add your first printer to get started</div>
+          <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openAdd}>+ Add Printer</button>
+        </div>
+      ) : (
+        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Printer</th>
+                <th>Specs</th>
+                <th>Base Rate</th>
+                <th>Efficiency</th>
+                <th>Labor ×</th>
+                <th>Markup ×</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayed.map((p) => (
+                <tr key={p.id} style={{ opacity: p.active ? 1 : 0.5 }}>
+                  <td>
+                    <div style={{ fontWeight: 600, color: T.text, fontSize: 14 }}>{p.name}</div>
+                    {p.brand && <div style={{ fontSize: 11, color: T.textDim, marginTop: 1 }}>{p.brand}{p.model ? ` · ${p.model}` : ""}</div>}
+                    <div style={{ display: "flex", gap: 4, marginTop: 4 }}>
+                      {p.multicolor && <span className="badge badge-purple">AMS/Multicolor</span>}
+                      {p.build_volume && <span className="tag">{p.build_volume}</span>}
+                    </div>
+                  </td>
+                  <td>
+                    <span className="badge badge-info">{p.wattage}W</span>
+                  </td>
+                  <td style={{ fontFamily: T.fontMono, color: T.text }}>₱{Number(p.base_rate).toFixed(2)}/hr</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.info }}>×{Number(p.efficiency).toFixed(2)}</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.warn }}>×{Number(p.labor).toFixed(2)}</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>×{Number(p.multiplier).toFixed(2)}</td>
+                  <td>
+                    <span style={{
+                      padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600,
+                      background: p.active ? T.accentGlow : "rgba(255,92,92,0.1)",
+                      border: `1px solid ${p.active ? T.accentDim : "rgba(255,92,92,0.3)"}`,
+                      color: p.active ? T.accent : T.danger,
+                    }}>
+                      {p.active ? "Active" : "Inactive"}
+                    </span>
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 5 }}>
+                      <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(p)}>Edit</button>
+                      <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openDupe(p)}>Dupe</button>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ padding: "4px 10px", fontSize: 11, color: p.active ? T.warn : T.accent, borderColor: p.active ? "rgba(245,166,35,0.3)" : T.accentDim }}
+                        onClick={() => toggleActive(p)}
+                      >
+                        {p.active ? "Disable" : "Enable"}
+                      </button>
+                      <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => { setConfirmDelete(p); setOpError(""); }} disabled={deleteLoading}>✕</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Confirm delete modal */}
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
+          <div className="confirm-modal">
+            <h3>Delete Printer?</h3>
+            <p>
+              Are you sure you want to permanently delete <strong style={{ color: T.text }}>{confirmDelete.name}</strong>?
+              <br /><br />
+              If this printer is linked to existing jobs, the deletion will fail. Consider disabling it instead.
+            </p>
+            <div style={{ display: "flex", gap: 10 }}>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmDelete(null)}>Cancel</button>
+              <button className="btn btn-danger" style={{ flex: 1, background: "rgba(255,92,92,0.15)" }} onClick={executeDelete}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add / Edit modal */}
+      {showForm && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowForm(false)}>
+          <div className="modal">
+            <h3 style={{ marginBottom: 4 }}>{editPrinter ? `Edit: ${editPrinter.name}` : "Add New Printer"}</h3>
+            <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 20 }}>
+              {editPrinter ? "Update printer specs and rate configuration." : "Configure a new printer and its billing rates."}
+            </p>
+
+            {/* Identity */}
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10 }}>Identity</div>
+            <div className="input-row">
+              <div className="input-group">
+                <label>Printer Name *</label>
+                <input type="text" placeholder="e.g. Bambu X1 Carbon" value={form.name} onChange={(e) => setForm(f => ({ ...f, name: e.target.value }))} />
+              </div>
+              <div className="input-group">
+                <label>Brand</label>
+                <input type="text" placeholder="e.g. Bambu Lab" value={form.brand} onChange={(e) => setForm(f => ({ ...f, brand: e.target.value }))} />
+              </div>
+            </div>
+            <div className="input-row">
+              <div className="input-group">
+                <label>Model</label>
+                <input type="text" placeholder="e.g. X1 Carbon Combo" value={form.model} onChange={(e) => setForm(f => ({ ...f, model: e.target.value }))} />
+              </div>
+              <div className="input-group">
+                <label>Build Volume</label>
+                <input type="text" placeholder="e.g. 256×256×256mm" value={form.build_volume} onChange={(e) => setForm(f => ({ ...f, build_volume: e.target.value }))} />
+              </div>
+            </div>
+
+            {/* Specs */}
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Specs</div>
+            <div className="input-row">
+              <div className="input-group">
+                <label>Wattage *</label>
+                <div className="input-addon">
+                  <input type="number" min={1} step={10} placeholder="200" value={form.wattage} onChange={(e) => setForm(f => ({ ...f, wattage: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <span className="input-suffix">W</span>
+                </div>
+                {form.wattage && <div style={{ fontSize: 11, color: T.textDim, marginTop: 3 }}>{(Number(form.wattage) / 1000).toFixed(3)} kW · ≈₱{((Number(form.wattage) / 1000) * 12).toFixed(2)}/hr elec</div>}
+              </div>
+              <div className="input-group" style={{ display: "flex", flexDirection: "column", justifyContent: "flex-start" }}>
+                <label>Features</label>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 9 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", margin: 0, fontSize: 13, color: T.text }}>
+                    <input type="checkbox" checked={form.multicolor} onChange={(e) => setForm(f => ({ ...f, multicolor: e.target.checked }))} />
+                    Multicolor / AMS
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", margin: 0, fontSize: 13, color: T.text }}>
+                    <input type="checkbox" checked={form.active} onChange={(e) => setForm(f => ({ ...f, active: e.target.checked }))} />
+                    Active
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            {/* Billing rates */}
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Billing Rates</div>
+            <div style={{ padding: "10px 14px", background: "rgba(91,156,246,0.07)", border: "1px solid rgba(91,156,246,0.18)", borderRadius: 8, fontSize: 11, color: T.info, marginBottom: 14, lineHeight: 1.6 }}>
+              <strong>How rates work:</strong> Final printer charge = <span style={{ fontFamily: T.fontMono }}>base_rate × hours × labor × multiplier</span>. Electricity is computed separately from wattage. Multicolor adds 8% electricity surcharge.
+            </div>
+
+            <div className="input-row">
+              <div className="input-group">
+                <label>Base Rate (₱/hr) <span style={{ color: T.info, fontSize: 10 }}>— machine depreciation/hour</span></label>
+                <div className="input-addon">
+                  <span className="input-prefix">₱</span>
+                  <input type="number" min={0} step={0.5} placeholder="5.00" value={form.base_rate} onChange={(e) => setForm(f => ({ ...f, base_rate: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+              </div>
+              <div className="input-group">
+                <label>Efficiency × <span style={{ color: T.info, fontSize: 10 }}>— electricity markup</span></label>
+                <div className="input-addon">
+                  <span className="input-prefix">×</span>
+                  <input type="number" min={0.1} step={0.05} placeholder="1.20" value={form.efficiency} onChange={(e) => setForm(f => ({ ...f, efficiency: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+              </div>
+            </div>
+            <div className="input-row">
+              <div className="input-group">
+                <label>Labor Multiplier × <span style={{ color: T.warn, fontSize: 10 }}>— applied on base rate</span></label>
+                <div className="input-addon">
+                  <span className="input-prefix">×</span>
+                  <input type="number" min={0.1} step={0.05} placeholder="1.00" value={form.labor} onChange={(e) => setForm(f => ({ ...f, labor: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+              </div>
+              <div className="input-group">
+                <label>Markup Multiplier × <span style={{ color: T.accent, fontSize: 10 }}>— profit multiplier</span></label>
+                <div className="input-addon">
+                  <span className="input-prefix">×</span>
+                  <input type="number" min={0.1} step={0.05} placeholder="1.50" value={form.multiplier} onChange={(e) => setForm(f => ({ ...f, multiplier: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+              </div>
+            </div>
+
+            {/* Live rate preview */}
+            {form.base_rate && form.labor && form.multiplier && (
+              <div style={{ padding: "10px 14px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 9, fontSize: 12, marginBottom: 12 }}>
+                <div style={{ color: T.textMuted, marginBottom: 4 }}>Rate preview (per hour):</div>
+                <div style={{ display: "flex", gap: 16, fontFamily: T.fontMono, flexWrap: "wrap" }}>
+                  <span style={{ color: T.textDim }}>Machine: <span style={{ color: T.text }}>₱{Number(form.base_rate || 0).toFixed(2)}</span></span>
+                  <span style={{ color: T.textDim }}>w/ Labor: <span style={{ color: T.warn }}>₱{(Number(form.base_rate || 0) * Number(form.labor || 1)).toFixed(2)}</span></span>
+                  <span style={{ color: T.textDim }}>w/ Markup: <span style={{ color: T.accent }}>₱{(Number(form.base_rate || 0) * Number(form.labor || 1) * Number(form.multiplier || 1)).toFixed(2)}</span></span>
+                </div>
+              </div>
+            )}
+
+            {opError && <div className="error-msg" style={{ marginBottom: 8 }}>Error: {opError}</div>}
+            <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setShowForm(false); setEditPrinter(null); }} disabled={opLoading}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={savePrinter} disabled={!form.name.trim() || opLoading}>
+                {opLoading ? "Saving…" : editPrinter ? "Update Printer" : "Add Printer"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── POS VIEW ─────────────────────────────────────────────────────────────────
-function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows, filaments, filSearch, setFilSearch, selectedFil, setSelectedFil, grams, setGrams, hours, setHours, costResult, customPrice, setCustomPrice, clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts, finalizeJob, saving, saveError, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters, activeOrderId, jobOrders }) {
+function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows, filaments, filSearch, setFilSearch, selectedFil, setSelectedFil, grams, setGrams, hours, setHours, costResult, customPrice, setCustomPrice, clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts, finalizeJob, saving, saveError, pricingConfig, activeOrderId, jobOrders }) {
   const activeOrder = activeOrderId ? jobOrders?.find((o) => o.id === activeOrderId) : null;
   return (
     <div>
@@ -818,7 +1185,10 @@ function Step2({ selectedPrinters, togglePrinter, setPrinterPct, printerDB, prin
     <div className="card">
       <div className="card-title"><span className="card-title-dot" />Printer Assignment</div>
       {printerRows.length === 0 ? (
-        <p style={{ fontSize: 13, color: T.textMuted }}>No active printers found in database.</p>
+        <div className="empty-state">
+          No active printers found.
+          <br /><span style={{ fontSize: 12, color: T.textDim, marginTop: 6, display: "block" }}>Add printers via the Printers tab.</span>
+        </div>
       ) : (
         <div className="grid2" style={{ marginBottom: 20 }}>
           {printerRows.map((p) => (
@@ -830,7 +1200,10 @@ function Step2({ selectedPrinters, togglePrinter, setPrinterPct, printerDB, prin
                   <span className="badge badge-info">{p.wattage}W</span>
                 </div>
               </div>
-              <div className="printer-meta">{p.brand} · {p.build_volume}</div>
+              <div className="printer-meta">{p.brand}{p.model ? ` ${p.model}` : ""}{p.build_volume ? ` · ${p.build_volume}` : ""}</div>
+              <div style={{ fontSize: 10, color: T.textDim, marginTop: 4, fontFamily: T.fontMono }}>
+                ₱{Number(p.base_rate).toFixed(2)}/hr · ×{Number(p.multiplier).toFixed(1)} markup
+              </div>
             </div>
           ))}
         </div>
@@ -869,7 +1242,7 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
       {filaments.length === 0 ? (
         <div className="empty-state">
           No active filaments found in database.
-          <br /><span style={{ fontSize: 12, color: T.textDim, marginTop: 6, display: "block" }}>Add filaments via the Filament Inventory tab.</span>
+          <br /><span style={{ fontSize: 12, color: T.textDim, marginTop: 6, display: "block" }}>Add filaments via the Filaments tab.</span>
         </div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -899,18 +1272,9 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
   const exactFilamentCost = selectedFil ? (grams / 1000) * Number(selectedFil.price_per_kg || 0) : 0;
   const wholeHrs = Math.floor(hours);
   const mins = Math.round((hours - wholeHrs) * 60);
-
-  const handleHrsChange = (v) => {
-    const h = Math.max(0, Number(v) || 0);
-    setHours(+(h + mins / 60).toFixed(4));
-  };
-  const handleMinsChange = (v) => {
-    const m = Math.max(0, Math.min(59, Number(v) || 0));
-    setHours(+(wholeHrs + m / 60).toFixed(4));
-  };
-
+  const handleHrsChange = (v) => { const h = Math.max(0, Number(v) || 0); setHours(+(h + mins / 60).toFixed(4)); };
+  const handleMinsChange = (v) => { const m = Math.max(0, Math.min(59, Number(v) || 0)); setHours(+(wholeHrs + m / 60).toFixed(4)); };
   const totalMin = Math.round(hours * 60);
-
   return (
     <div className="card">
       <div className="card-title"><span className="card-title-dot" />Print Parameters</div>
@@ -921,7 +1285,6 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
           <span className="badge badge-warn">{selectedFil.finish}</span>
         </div>
       )}
-
       <div className="input-group">
         <label>Filament Usage (grams)</label>
         <div className="input-addon">
@@ -933,7 +1296,6 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
           <span style={{ color: T.textMuted }}>{exactFilamentCost.toFixed(2)} ₱ raw material cost</span>
         </div>
       </div>
-
       <div className="input-group" style={{ marginTop: 16 }}>
         <label>Print Duration</label>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -956,80 +1318,41 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
           Total: <span style={{ color: T.accent, fontFamily: T.fontMono }}>{totalMin} min</span> &nbsp;·&nbsp; {hours.toFixed(2)} hrs
         </div>
       </div>
-
       <div className="grid2" style={{ marginTop: 20 }}>
-        <div className="stat-card">
-          <div className="stat-label">Weight</div>
-          <div className="stat-val">{grams}g</div>
-          <div className="stat-sub">{(grams / 1000).toFixed(3)} kg</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Time</div>
-          <div className="stat-val">{wholeHrs}h {mins}m</div>
-          <div className="stat-sub">{totalMin} min total</div>
-        </div>
+        <div className="stat-card"><div className="stat-label">Weight</div><div className="stat-val">{grams}g</div><div className="stat-sub">{(grams / 1000).toFixed(3)} kg</div></div>
+        <div className="stat-card"><div className="stat-label">Time</div><div className="stat-val">{wholeHrs}h {mins}m</div><div className="stat-sub">{totalMin} min total</div></div>
       </div>
     </div>
   );
 }
 
-// ─── STEP 5 — Clean cost breakdown only, no confusing comparison inputs ───────
 function Step5({ costResult, pricingConfig, selectedFil }) {
-  if (!costResult)
-    return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Computing costs…</p></div>;
-
+  if (!costResult) return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Computing costs…</p></div>;
   const items = [
     { label: "Filament", ...costResult.filament },
     { label: "Electricity", ...costResult.electricity },
     { label: "Printer Usage", ...costResult.printer_usage },
   ];
-
   const maxCharged = Math.max(...items.map((i) => i.charged), 0.01);
-
-  // Filament pricing info for context
   const hasTrueCost = selectedFil?.true_cost_per_kg != null;
   const hasSellingPrice = selectedFil?.selling_price_per_kg != null;
-
   return (
     <div>
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Cost Breakdown</div>
-
-        {/* Filament pricing context */}
         {selectedFil && (
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, padding: "10px 14px", background: T.bgInput, borderRadius: 8 }}>
             <span className="filament-color-dot" style={{ background: getFilColor(selectedFil.color), border: "1px solid rgba(255,255,255,0.1)", alignSelf: "center" }} />
             <span style={{ fontSize: 12, color: T.text }}>{selectedFil.brand} {selectedFil.type} — {selectedFil.color}</span>
-            {hasTrueCost && (
-              <span style={{ fontSize: 11, color: T.info, fontFamily: T.fontMono }}>
-                true: ₱{selectedFil.true_cost_per_kg}/kg
-              </span>
-            )}
-            {hasSellingPrice && (
-              <span style={{ fontSize: 11, color: T.accent, fontFamily: T.fontMono }}>
-                selling: ₱{selectedFil.selling_price_per_kg}/kg
-              </span>
-            )}
-            {!hasTrueCost && (
-              <span style={{ fontSize: 11, color: T.textDim }}>
-                ref: ₱{selectedFil.price_per_kg}/kg (no true cost set)
-              </span>
-            )}
+            {hasTrueCost && <span style={{ fontSize: 11, color: T.info, fontFamily: T.fontMono }}>true: ₱{selectedFil.true_cost_per_kg}/kg</span>}
+            {hasSellingPrice && <span style={{ fontSize: 11, color: T.accent, fontFamily: T.fontMono }}>selling: ₱{selectedFil.selling_price_per_kg}/kg</span>}
+            {!hasTrueCost && <span style={{ fontSize: 11, color: T.textDim }}>ref: ₱{selectedFil.price_per_kg}/kg</span>}
           </div>
         )}
-
-        {/* Legend */}
         <div className="dual-bar-legend" style={{ marginBottom: 16 }}>
-          <div className="dual-bar-legend-item">
-            <div className="dual-bar-legend-dot" style={{ background: T.textDim, opacity: 0.5 }} />
-            Real cost
-          </div>
-          <div className="dual-bar-legend-item">
-            <div className="dual-bar-legend-dot" style={{ background: T.accent, opacity: 0.75 }} />
-            Charged to client
-          </div>
+          <div className="dual-bar-legend-item"><div className="dual-bar-legend-dot" style={{ background: T.textDim, opacity: 0.5 }} />Real cost</div>
+          <div className="dual-bar-legend-item"><div className="dual-bar-legend-dot" style={{ background: T.accent, opacity: 0.75 }} />Charged to client</div>
         </div>
-
         {items.map((item) => (
           <div key={item.label} className="cmp-row">
             <div className="cmp-header">
@@ -1047,8 +1370,6 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
             </div>
           </div>
         ))}
-
-        {/* Totals */}
         <div style={{ marginTop: 16, padding: "12px 14px", background: T.bgInput, borderRadius: 9, border: `1px solid ${T.border}` }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
             <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Total</span>
@@ -1069,8 +1390,6 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
           </div>
         </div>
       </div>
-
-      {/* Per-printer breakdown (if multi-printer) */}
       {costResult.per_printer && costResult.per_printer.length > 1 && (
         <div className="card">
           <div className="card-title"><span className="card-title-dot" />Per-Printer Breakdown</div>
@@ -1088,13 +1407,7 @@ function Step5({ costResult, pricingConfig, selectedFil }) {
           ))}
         </div>
       )}
-
-      {costResult.formula_error && (
-        <div className="validation-gate" style={{ marginBottom: 16 }}>
-          Pricing formula warning: {costResult.formula_error}
-        </div>
-      )}
-
+      {costResult.formula_error && <div className="validation-gate" style={{ marginBottom: 16 }}>Pricing formula warning: {costResult.formula_error}</div>}
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Recommendation</div>
         <div className="grid3">
@@ -1264,12 +1577,10 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
     setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
     setEditFil(null); setShowAddFil(true); setOpError("");
   };
-
   const openEdit = (f) => {
     setForm({ brand: f.brand, type: f.type, color: f.color, finish: f.finish, price_per_kg: f.price_per_kg, true_cost_per_kg: f.true_cost_per_kg ?? "", selling_price_per_kg: f.selling_price_per_kg ?? "" });
     setEditFil(f.id); setShowAddFil(true); setOpError("");
   };
-
   const openDupe = (f) => {
     setForm({ brand: f.brand, type: f.type, color: f.color + " (Copy)", finish: f.finish, price_per_kg: f.price_per_kg, true_cost_per_kg: f.true_cost_per_kg ?? "", selling_price_per_kg: f.selling_price_per_kg ?? "" });
     setEditFil(null); setShowAddFil(true); setOpError("");
@@ -1298,7 +1609,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         if (error) throw new Error(error.message);
       }
       await reloadFilaments();
-      setForm({ brand: "", type: dbFilamentTypes[0] || "PLA", color: "", finish: dbFinishTypes[0] || "Matte", price_per_kg: 25, true_cost_per_kg: "", selling_price_per_kg: "" });
       setEditFil(null); setShowAddFil(false);
     } catch (err) {
       setOpError(err.message);
@@ -1308,17 +1618,15 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
   };
 
   const confirmAndDelete = (f) => { setConfirmDelete(f); setOpError(""); };
-
   const executeDelete = async () => {
     if (!confirmDelete) return;
     setDeleteLoading(true);
     const id = confirmDelete.id;
-    const name = `${confirmDelete.brand} ${confirmDelete.color}`;
     setConfirmDelete(null);
     try {
       const { error } = await supabase.from("filaments").delete().eq("id", id);
       if (error) {
-        setOpError(`Cannot delete "${name}": ${error.message}. Try removing associated job records first.`);
+        setOpError(`Cannot delete "${confirmDelete.brand} ${confirmDelete.color}": ${error.message}.`);
       } else {
         setFilaments((prev) => prev.filter((f) => f.id !== id));
       }
@@ -1352,13 +1660,8 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
           <table className="table">
             <thead>
               <tr>
-                <th>Filament</th>
-                <th>Type</th>
-                <th>Finish</th>
-                <th>₱/kg (ref)</th>
-                <th>True cost/g</th>
-                <th>Selling/g</th>
-                <th>Actions</th>
+                <th>Filament</th><th>Type</th><th>Finish</th>
+                <th>₱/kg (ref)</th><th>True cost/g</th><th>Selling/g</th><th>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -1404,11 +1707,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
           <div className="confirm-modal">
             <h3>Delete Filament?</h3>
-            <p>
-              Are you sure you want to delete <strong style={{ color: T.text }}>{confirmDelete.brand} {confirmDelete.color}</strong>?
-              <br /><br />
-              If this filament is referenced by existing jobs, the deletion will fail.
-            </p>
+            <p>Are you sure you want to delete <strong style={{ color: T.text }}>{confirmDelete.brand} {confirmDelete.color}</strong>?</p>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmDelete(null)}>Cancel</button>
               <button className="btn btn-danger" style={{ flex: 1, background: "rgba(255,92,92,0.15)" }} onClick={executeDelete}>Delete</button>
@@ -1419,7 +1718,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
 
       {showAddFil && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowAddFil(false)}>
-          <div className="modal">
+          <div className="modal" style={{ width: 500 }}>
             <h3>{editFil ? "Edit Filament" : "Add Filament"}</h3>
             <div className="input-row">
               <div className="input-group">
@@ -1448,7 +1747,7 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
               </div>
             </div>
             <div className="input-group">
-              <label>Reference Price per kg (₱) <span style={{ color: T.textDim, fontSize: 10 }}>— fallback if true cost not set</span></label>
+              <label>Reference Price per kg (₱)</label>
               <input type="number" value={form.price_per_kg} min={1} onChange={(e) => setForm((f) => ({ ...f, price_per_kg: +e.target.value }))} />
             </div>
             <div className="input-row">
@@ -1458,7 +1757,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
                   <span className="input-prefix">₱</span>
                   <input type="number" min={0} step={0.01} placeholder="e.g. 800" value={form.true_cost_per_kg} onChange={(e) => setForm((f) => ({ ...f, true_cost_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
                 </div>
-                {form.true_cost_per_kg !== "" && <div style={{ fontSize: 11, color: T.info, marginTop: 3 }}>₱/g: {(Number(form.true_cost_per_kg) / 1000).toFixed(4)}</div>}
               </div>
               <div className="input-group">
                 <label>Selling Price per kg (₱) <span style={{ color: T.accent, fontSize: 10 }}>— charged to client</span></label>
@@ -1466,7 +1764,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
                   <span className="input-prefix">₱</span>
                   <input type="number" min={0} step={0.01} placeholder="e.g. 1400" value={form.selling_price_per_kg} onChange={(e) => setForm((f) => ({ ...f, selling_price_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
                 </div>
-                {form.selling_price_per_kg !== "" && <div style={{ fontSize: 11, color: T.accent, marginTop: 3 }}>₱/g: {(Number(form.selling_price_per_kg) / 1000).toFixed(4)}</div>}
               </div>
             </div>
             {form.true_cost_per_kg !== "" && form.selling_price_per_kg !== "" && Number(form.true_cost_per_kg) > 0 && (
@@ -1545,8 +1842,6 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
       if (pricingDraft.markup_multiplier !== "") payload.markup_multiplier = Number(pricingDraft.markup_multiplier);
       if (pricingDraft.minimum_price !== "") payload.minimum_price = Number(pricingDraft.minimum_price);
       if (pricingDraft.formula !== "") payload.formula = pricingDraft.formula;
-      // Note: true_electricity_cost and selling_electricity_cost are NOT in the DB schema
-      // They are stored in filament profiles instead (true_cost_per_kg / selling_price_per_kg)
       if (Object.keys(payload).length === 0) { setMsg("pricing", "No changes."); setSaving((s) => ({ ...s, pricing: false })); return; }
       const { error } = await supabase.from("pricing_settings").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", "default");
       if (error) throw new Error(error.message);
@@ -1577,37 +1872,33 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
     <div>
       <div className="page-header">
         <div className="page-title">Parameters</div>
-        <div className="page-sub">Edit filament prices, printer rates, and pricing settings.</div>
+        <div className="page-sub">Quick-edit filament prices, printer rates, and pricing settings.</div>
       </div>
 
       <div className="card">
-        <div className="card-title"><span className="card-title-dot" />Filament Prices</div>
-        {filaments.length === 0 ? (
-          <div className="empty-state">No filaments found.</div>
-        ) : (
-          filaments.map((f) => (
-            <div key={f.id} className="params-field-row">
-              <div className="params-field-info">
-                <div className="params-field-name">
-                  <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} />
-                  {f.color}
-                  <span className="badge badge-info">{f.type}</span>
-                  <span className="tag">{f.finish}</span>
-                </div>
-                <div className="params-field-sub">
-                  {f.brand}
-                  {" · "}<span style={{ color: T.textDim }}>ref: ₱{f.price_per_kg}/kg</span>
-                  {f.true_cost_per_kg != null && <>{" · "}<span style={{ color: T.info }}>true: ₱{f.true_cost_per_kg}/kg</span></>}
-                  {f.selling_price_per_kg != null && <>{" · "}<span style={{ color: T.accent }}>sell: ₱{f.selling_price_per_kg}/kg</span></>}
-                </div>
+        <div className="card-title"><span className="card-title-dot" />Filament Reference Prices</div>
+        {filaments.length === 0 ? <div className="empty-state">No filaments found.</div> : filaments.map((f) => (
+          <div key={f.id} className="params-field-row">
+            <div className="params-field-info">
+              <div className="params-field-name">
+                <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} />
+                {f.color}
+                <span className="badge badge-info">{f.type}</span>
+                <span className="tag">{f.finish}</span>
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <label style={{ margin: 0, fontSize: 11, color: T.textDim, whiteSpace: "nowrap" }}>₱/kg</label>
-                <input type="number" step="any" style={{ width: 130 }} placeholder={String(f.price_per_kg)} value={filEdits[String(f.id)] ?? ""} onChange={(e) => onFilChange(String(f.id), e.target.value === "" ? "" : e.target.value)} />
+              <div className="params-field-sub">
+                {f.brand}
+                {" · "}<span style={{ color: T.textDim }}>ref: ₱{f.price_per_kg}/kg</span>
+                {f.true_cost_per_kg != null && <>{" · "}<span style={{ color: T.info }}>true: ₱{f.true_cost_per_kg}/kg</span></>}
+                {f.selling_price_per_kg != null && <>{" · "}<span style={{ color: T.accent }}>sell: ₱{f.selling_price_per_kg}/kg</span></>}
               </div>
             </div>
-          ))
-        )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kg</label>
+              <input type="number" step="any" style={{ width: 130 }} placeholder={String(f.price_per_kg)} value={filEdits[String(f.id)] ?? ""} onChange={(e) => onFilChange(String(f.id), e.target.value === "" ? "" : e.target.value)} />
+            </div>
+          </div>
+        ))}
         <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
           <button className="btn btn-ghost" onClick={() => { setFilEdits({}); setMsg("fil", ""); }}>Reset</button>
           <button className="btn btn-primary" onClick={saveFilaments} disabled={saving.fil}>{saving.fil ? "Saving…" : "Save Filament Prices"}</button>
@@ -1617,9 +1908,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
 
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Printer Rates</div>
-        {printerRows.length === 0 ? (
-          <div className="empty-state">No active printers found.</div>
-        ) : (
+        {printerRows.length === 0 ? <div className="empty-state">No active printers found. Add them via the Printers tab.</div> : (
           <div>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 110px 110px", gap: 8, paddingBottom: 8, borderBottom: `1px solid ${T.border}`, marginBottom: 4 }}>
               <div style={{ fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.6px" }}>Printer</div>
@@ -1633,7 +1922,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
                 <div key={p.id} className="params-field-row" style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 110px 110px", gap: 8, alignItems: "center" }}>
                   <div>
                     <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{p.brand} · {p.wattage}W</div>
+                    <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{p.brand}{p.model ? ` ${p.model}` : ""} · {p.wattage}W</div>
                   </div>
                   <input type="number" step="any" placeholder={String(p.base_rate ?? 0)} value={ed.base ?? ""} onChange={(e) => onPrinterChange(String(p.id), "base", e.target.value === "" ? "" : e.target.value)} />
                   <input type="number" step="any" placeholder={String(p.efficiency ?? 0)} value={ed.eff ?? ""} onChange={(e) => onPrinterChange(String(p.id), "eff", e.target.value === "" ? "" : e.target.value)} />
@@ -1654,7 +1943,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Pricing Settings</div>
         {[
-          { label: "Electricity Rate", sub: `Current: ₱${pricingConfig?.electricity_rate ?? "—"}/kWh (used in cost engine)`, key: "electricity_rate", unit: "₱/kWh", placeholder: String(pricingConfig?.electricity_rate ?? 0) },
+          { label: "Electricity Rate", sub: `Current: ₱${pricingConfig?.electricity_rate ?? "—"}/kWh`, key: "electricity_rate", unit: "₱/kWh", placeholder: String(pricingConfig?.electricity_rate ?? 0) },
           { label: "Markup Multiplier", sub: `Current: ×${pricingConfig?.markup_multiplier ?? "—"}`, key: "markup_multiplier", unit: "×", placeholder: String(pricingConfig?.markup_multiplier ?? 1) },
           { label: "Minimum Price", sub: `Current: ₱${pricingConfig?.minimum_price ?? "—"}`, key: "minimum_price", unit: "₱", placeholder: String(pricingConfig?.minimum_price ?? 0) },
         ].map((field) => (
@@ -1672,7 +1961,7 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
         <div className="params-field-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
           <div className="params-field-info">
             <div className="params-field-name">Pricing Formula</div>
-            <div className="params-field-sub" style={{ marginTop: 4 }}>Current: <span style={{ fontFamily: T.fontMono, color: T.textMuted }}>{pricingConfig?.formula || "—"}</span></div>
+            <div className="params-field-sub">Current: <span style={{ fontFamily: T.fontMono, color: T.textMuted }}>{pricingConfig?.formula || "—"}</span></div>
           </div>
           <textarea rows={3} placeholder={pricingConfig?.formula || "formula"} value={pricingDraft.formula} onChange={(e) => onPricingChange("formula", e.target.value)} style={{ resize: "vertical", width: "100%", fontFamily: T.fontMono }} />
         </div>
@@ -1695,39 +1984,25 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
   const [saveMsg, setSaveMsg] = useState("");
 
   useEffect(() => { setDraft(pricingConfig); }, [pricingConfig]);
-
   const update = (key, value) => setDraft((c) => ({ ...c, [key]: value }));
 
   const testFormula = () => {
     try {
-      // FIX: include all variables including aliases so test doesn't throw on any valid formula
       const testVars = {
-        grams: 100, hours: 4,
-        filament_real: 65, filament_charged: 120,
+        grams: 100, hours: 4, filament_real: 65, filament_charged: 120,
         electricity_real: 16.8, electricity_charged: 25,
         printer_real: 80, printer_charged: 150,
         real_total: 161.8, default_charged_total: 295,
         markup_multiplier: Number(draft.markup_multiplier || 1),
         minimum_price: Number(draft.minimum_price || 0),
         electricity_rate: Number(draft.electricity_rate || 0),
-        filament_price_per_gram: 65 / 100,
-        filament_selling_per_gram: 120 / 100,
-        true_cost_per_kg: 650,
-        selling_price_per_kg: 1200,
-        elec_kwh: 0.56,
-        machine_rate: 80,
-        machine_charged: 150,
-        filament_cost: 65,
-        filament_price: 120,
-        electricity_cost: 16.8,
-        electricity_price: 25,
-        total_cost: 161.8,
-        power_kw: 0.14,
-        power_kwh: 0.56,
-        watt_hours: 560,
-        print_hours: 4,
-        print_grams: 100,
-        labor_cost: 150,
+        filament_price_per_gram: 65 / 100, filament_selling_per_gram: 120 / 100,
+        true_cost_per_kg: 650, selling_price_per_kg: 1200, elec_kwh: 0.56,
+        machine_rate: 80, machine_charged: 150,
+        filament_cost: 65, filament_price: 120,
+        electricity_cost: 16.8, electricity_price: 25, total_cost: 161.8,
+        power_kw: 0.14, power_kwh: 0.56, watt_hours: 560,
+        print_hours: 4, print_grams: 100, labor_cost: 150,
       };
       const result = _evaluatePricingFormula(draft.formula, testVars);
       setTestError(""); setTestPrice(Math.max(result, Number(draft.minimum_price || 0)));
@@ -1740,8 +2015,7 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
       electricity_rate: Number(draft.electricity_rate || 0),
       minimum_price: Number(draft.minimum_price || 0),
       markup_multiplier: Number(draft.markup_multiplier || 1),
-      formula: draft.formula,
-      updated_at: new Date().toISOString(),
+      formula: draft.formula, updated_at: new Date().toISOString(),
     };
     const { error } = await supabase.from("pricing_settings").update(payload).eq("id", "default");
     if (error) { setSaveMsg(`Error: ${error.message}`); } else { setPricingConfig({ ...payload }); setSaveMsg("Saved successfully."); testFormula(); }
@@ -1795,16 +2069,14 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
               "true_cost_per_kg", "selling_price_per_kg",
               "elec_kwh", "power_kw", "power_kwh", "watt_hours",
               "print_hours", "print_grams", "labor_cost",
-            ].map((v) => (
-              <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>
-            ))}
+            ].map((v) => <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>)}
           </div>
           <div style={{ marginTop: 18 }}>
             <div className="card-title"><span className="card-title-dot" />Examples</div>
-            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Simple markup</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>default_charged_total * markup_multiplier</div></div>
-            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Cost-plus target</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>real_total * 2.2</div></div>
-            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Machine-rate based</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>machine_rate + filament_price + electricity_price</div></div>
-            <div className="rec-card"><div className="rec-title">Weight and time based</div><div className="rec-val" style={{ fontFamily: T.fontMono, wordBreak: "break-word" }}>(grams * 2.5) + (hours * 35)</div></div>
+            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Simple markup</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>default_charged_total * markup_multiplier</div></div>
+            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Cost-plus target</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>real_total * 2.2</div></div>
+            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Machine-rate based</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>machine_rate + filament_price + electricity_price</div></div>
+            <div className="rec-card"><div className="rec-title">Weight and time based</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>(grams * 2.5) + (hours * 35)</div></div>
           </div>
         </div>
       </div>
@@ -1824,11 +2096,7 @@ const STATUS_COLORS = {
 
 function StatusBadge({ status }) {
   const c = STATUS_COLORS[status] || STATUS_COLORS.Queued;
-  return (
-    <span style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: c.bg, border: `1px solid ${c.border}`, color: c.text, whiteSpace: "nowrap" }}>
-      {status}
-    </span>
-  );
+  return <span style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: c.bg, border: `1px solid ${c.border}`, color: c.text, whiteSpace: "nowrap" }}>{status}</span>;
 }
 
 function DeadlineBadge({ deadline }) {
@@ -1858,20 +2126,12 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
 
   const openAdd = () => { setForm(emptyForm); setEditOrder(null); setShowForm(true); setOpError(""); };
   const openEdit = (o) => {
-    setForm({
-      client_name: o.client_name || "", title: o.title || "", description: o.description || "",
-      filament_id: o.filament_id || "", printer_id: o.printer_id || "",
-      deadline: o.deadline || "", status: o.status || "Queued",
-      priority: o.priority || "Normal",
-      estimated_grams: o.estimated_grams ?? "", estimated_hours: o.estimated_hours ?? "",
-    });
+    setForm({ client_name: o.client_name || "", title: o.title || "", description: o.description || "", filament_id: o.filament_id || "", printer_id: o.printer_id || "", deadline: o.deadline || "", status: o.status || "Queued", priority: o.priority || "Normal", estimated_grams: o.estimated_grams ?? "", estimated_hours: o.estimated_hours ?? "" });
     setEditOrder(o); setShowForm(true); setOpError("");
   };
 
   const reloadOrders = async () => {
-    const { data, error } = await supabase.from("job_orders")
-      .select("*, filaments(brand,type,color), printers(name)")
-      .order("deadline", { ascending: true, nullsFirst: false });
+    const { data, error } = await supabase.from("job_orders").select("*, filaments(brand,type,color), printers(name)").order("deadline", { ascending: true, nullsFirst: false });
     if (error) console.warn("Reload orders error:", error.message);
     if (data) setJobOrders(data);
   };
@@ -1880,14 +2140,10 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
     if (!form.client_name.trim() || !form.title.trim()) { setOpError("Client name and title are required."); return; }
     setOpLoading(true); setOpError("");
     const payload = {
-      client_name: form.client_name.trim(),
-      title: form.title.trim(),
-      description: form.description || "",
-      filament_id: form.filament_id || null,
-      printer_id: form.printer_id || null,
-      deadline: form.deadline || null,
-      status: form.status,
-      priority: form.priority,
+      client_name: form.client_name.trim(), title: form.title.trim(),
+      description: form.description || "", filament_id: form.filament_id || null,
+      printer_id: form.printer_id || null, deadline: form.deadline || null,
+      status: form.status, priority: form.priority,
       estimated_grams: form.estimated_grams !== "" ? Number(form.estimated_grams) : null,
       estimated_hours: form.estimated_hours !== "" ? Number(form.estimated_hours) : null,
       updated_at: new Date().toISOString(),
@@ -1919,28 +2175,17 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
     else setOpError(error.message);
   };
 
-  const filtered = [...jobOrders]
-    .filter((o) => filterStatus === "All" || o.status === filterStatus)
-    .sort((a, b) => {
-      if (sortBy === "priority") {
-        const pi = (p) => ["Urgent", "High", "Normal", "Low"].indexOf(p ?? "Normal");
-        const diff = pi(a.priority) - pi(b.priority);
-        if (diff !== 0) return diff;
-        // secondary: deadline
-        if (!a.deadline && !b.deadline) return 0;
-        if (!a.deadline) return 1;
-        if (!b.deadline) return -1;
-        return new Date(a.deadline) - new Date(b.deadline);
-      }
-      if (sortBy === "deadline") {
-        if (!a.deadline && !b.deadline) return 0;
-        if (!a.deadline) return 1;
-        if (!b.deadline) return -1;
-        return new Date(a.deadline) - new Date(b.deadline);
-      }
-      if (sortBy === "status") return (a.status || "").localeCompare(b.status || "");
-      return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-    });
+  const filtered = [...jobOrders].filter((o) => filterStatus === "All" || o.status === filterStatus).sort((a, b) => {
+    if (sortBy === "priority") {
+      const pi = (p) => ["Urgent", "High", "Normal", "Low"].indexOf(p ?? "Normal");
+      const diff = pi(a.priority) - pi(b.priority); if (diff !== 0) return diff;
+      if (!a.deadline && !b.deadline) return 0; if (!a.deadline) return 1; if (!b.deadline) return -1;
+      return new Date(a.deadline) - new Date(b.deadline);
+    }
+    if (sortBy === "deadline") { if (!a.deadline && !b.deadline) return 0; if (!a.deadline) return 1; if (!b.deadline) return -1; return new Date(a.deadline) - new Date(b.deadline); }
+    if (sortBy === "status") return (a.status || "").localeCompare(b.status || "");
+    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+  });
 
   const counts = ORDER_STATUSES.reduce((acc, s) => { acc[s] = jobOrders.filter((o) => o.status === s).length; return acc; }, {});
 
@@ -1954,23 +2199,15 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         <button className="btn btn-primary" onClick={openAdd}>+ Add Order</button>
       </div>
 
-      {opError && (
-        <div style={{ marginBottom: 12, padding: "10px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>
-      )}
+      {opError && <div style={{ marginBottom: 12, padding: "10px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>}
 
-      {/* Filter + Sort bar */}
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}>
           {["All", ...ORDER_STATUSES].map((s) => {
             const c = s === "All" ? null : STATUS_COLORS[s];
             const active = filterStatus === s;
             return (
-              <button key={s} onClick={() => setFilterStatus(s)} style={{
-                padding: "4px 11px", borderRadius: 20, border: `1px solid ${active ? (c?.border ?? T.accent) : T.border}`,
-                background: active ? (c?.bg ?? T.accentGlow) : "transparent",
-                color: active ? (c?.text ?? T.accent) : T.textMuted,
-                fontSize: 11, fontWeight: active ? 600 : 400, cursor: "pointer",
-              }}>
+              <button key={s} onClick={() => setFilterStatus(s)} style={{ padding: "4px 11px", borderRadius: 20, border: `1px solid ${active ? (c?.border ?? T.accent) : T.border}`, background: active ? (c?.bg ?? T.accentGlow) : "transparent", color: active ? (c?.text ?? T.accent) : T.textMuted, fontSize: 11, fontWeight: active ? 600 : 400, cursor: "pointer" }}>
                 {s}{s === "All" ? ` (${jobOrders.length})` : counts[s] ? ` (${counts[s]})` : ""}
               </button>
             );
@@ -1979,11 +2216,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: T.textDim }}>Sort:</span>
           {["priority", "deadline", "status", "created"].map((s) => (
-            <button key={s} onClick={() => setSortBy(s)} style={{
-              padding: "4px 9px", borderRadius: 6, border: `1px solid ${sortBy === s ? T.accent : T.border}`,
-              background: sortBy === s ? T.accentGlow : "transparent",
-              color: sortBy === s ? T.accent : T.textMuted, fontSize: 11, cursor: "pointer",
-            }}>{s.charAt(0).toUpperCase() + s.slice(1)}</button>
+            <button key={s} onClick={() => setSortBy(s)} style={{ padding: "4px 9px", borderRadius: 6, border: `1px solid ${sortBy === s ? T.accent : T.border}`, background: sortBy === s ? T.accentGlow : "transparent", color: sortBy === s ? T.accent : T.textMuted, fontSize: 11, cursor: "pointer" }}>{s.charAt(0).toUpperCase() + s.slice(1)}</button>
           ))}
         </div>
       </div>
@@ -1992,13 +2225,11 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>{filterStatus === "All" ? "No job orders yet" : `No orders with status "${filterStatus}"`}</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Add orders to track and prioritize what to print</div>
           {filterStatus === "All" && <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openAdd}>+ Add Order</button>}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filtered.map((order) => {
-            // joined data from select("*, filaments(...), printers(...)")
             const filName = order.filaments ? `${order.filaments.brand} ${order.filaments.type} ${order.filaments.color}` : null;
             const filColor = order.filaments ? getFilColor(order.filaments.color) : null;
             const printerName = order.printers ? order.printers.name : null;
@@ -2006,7 +2237,6 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
               <div key={order.id} className="card" style={{ padding: "14px 18px", marginBottom: 0, borderLeft: `3px solid ${STATUS_COLORS[order.status]?.text ?? T.border}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    {/* Title row */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
                       <span style={{ fontSize: 14, fontWeight: 600, color: T.text }}>{order.title}</span>
                       <StatusBadge status={order.status} />
@@ -2014,14 +2244,12 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                         {order.priority === "Urgent" ? "🔴" : order.priority === "High" ? "🟠" : order.priority === "Normal" ? "🟡" : "⚪"} {order.priority}
                       </span>
                     </div>
-                    {/* Client + resources */}
                     <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 4 }}>
                       <strong style={{ color: T.text }}>{order.client_name}</strong>
                       {filName && <> · <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: filColor, display: "inline-block" }} />{filName}</span></>}
                       {printerName && <> · {printerName}</>}
                     </div>
                     {order.description && <div style={{ fontSize: 11, color: T.textDim, marginBottom: 4 }}>{order.description}</div>}
-                    {/* Meta row */}
                     <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
                       <span style={{ fontSize: 11, color: T.textMuted }}>Deadline: <DeadlineBadge deadline={order.deadline} /></span>
                       {order.estimated_grams && <span style={{ fontSize: 11, color: T.textMuted }}>~<span style={{ fontFamily: T.fontMono, color: T.text }}>{order.estimated_grams}g</span></span>}
@@ -2030,18 +2258,13 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                       )}
                     </div>
                   </div>
-                  {/* Actions */}
                   <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
-                    <select value={order.status} onChange={(e) => updateStatus(order.id, e.target.value)}
-                      style={{ fontSize: 11, padding: "4px 7px", background: STATUS_COLORS[order.status]?.bg ?? T.bgInput, border: `1px solid ${STATUS_COLORS[order.status]?.border ?? T.border}`, color: STATUS_COLORS[order.status]?.text ?? T.textMuted, borderRadius: 6, cursor: "pointer" }}>
+                    <select value={order.status} onChange={(e) => updateStatus(order.id, e.target.value)} style={{ fontSize: 11, padding: "4px 7px", background: STATUS_COLORS[order.status]?.bg ?? T.bgInput, border: `1px solid ${STATUS_COLORS[order.status]?.border ?? T.border}`, color: STATUS_COLORS[order.status]?.text ?? T.textMuted, borderRadius: 6, cursor: "pointer" }}>
                       {ORDER_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
                     <div style={{ display: "flex", gap: 5 }}>
                       {order.status !== "Done" && order.status !== "Cancelled" && (
-                        <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={async () => {
-                          await updateStatus(order.id, "Printing");
-                          startJobFromOrder({ ...order, status: "Printing" });
-                        }}>▶ Start Job</button>
+                        <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={async () => { await updateStatus(order.id, "Printing"); startJobFromOrder({ ...order, status: "Printing" }); }}>▶ Start Job</button>
                       )}
                       <button className="btn btn-ghost" style={{ padding: "4px 9px", fontSize: 11 }} onClick={() => openEdit(order)}>Edit</button>
                       <button className="btn btn-danger" style={{ padding: "4px 9px", fontSize: 11 }} onClick={() => setConfirmDel(order)}>✕</button>
@@ -2054,7 +2277,6 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         </div>
       )}
 
-      {/* Confirm delete */}
       {confirmDel && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDel(null)}>
           <div className="confirm-modal">
@@ -2068,88 +2290,32 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         </div>
       )}
 
-      {/* Add / Edit modal */}
       {showForm && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowForm(false)}>
-          <div className="modal" style={{ width: 520, maxHeight: "90vh", overflowY: "auto" }}>
+          <div className="modal" style={{ width: 520 }}>
             <h3>{editOrder ? "Edit Order" : "New Job Order"}</h3>
-
             <div className="input-row">
-              <div className="input-group">
-                <label>Client Name *</label>
-                <input type="text" placeholder="e.g. Maria Santos" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} />
-              </div>
-              <div className="input-group">
-                <label>Deadline</label>
-                <input type="date" value={form.deadline} onChange={(e) => setForm((f) => ({ ...f, deadline: e.target.value }))} />
-              </div>
+              <div className="input-group"><label>Client Name *</label><input type="text" placeholder="e.g. Maria Santos" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} /></div>
+              <div className="input-group"><label>Deadline</label><input type="date" value={form.deadline} onChange={(e) => setForm((f) => ({ ...f, deadline: e.target.value }))} /></div>
             </div>
-
-            <div className="input-group">
-              <label>Job Title *</label>
-              <input type="text" placeholder="e.g. Dragon figurine ×2, Phone stand" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
-            </div>
-
-            <div className="input-group">
-              <label>Description / Notes</label>
-              <textarea rows={2} placeholder="Color, special requirements, file name…" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} />
-            </div>
-
+            <div className="input-group"><label>Job Title *</label><input type="text" placeholder="e.g. Dragon figurine ×2, Phone stand" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} /></div>
+            <div className="input-group"><label>Description / Notes</label><textarea rows={2} placeholder="Color, special requirements…" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} /></div>
             <div className="input-row">
-              <div className="input-group">
-                <label>Priority</label>
-                <select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}>
-                  {PRIORITIES.map((p) => <option key={p}>{p}</option>)}
-                </select>
-              </div>
-              <div className="input-group">
-                <label>Status</label>
-                <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
-                  {ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}
-                </select>
-              </div>
+              <div className="input-group"><label>Priority</label><select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select></div>
+              <div className="input-group"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>{ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}</select></div>
             </div>
-
             <div className="input-row">
-              <div className="input-group">
-                <label>Filament (optional)</label>
-                <select value={form.filament_id} onChange={(e) => setForm((f) => ({ ...f, filament_id: e.target.value }))}>
-                  <option value="">— None —</option>
-                  {filaments.map((f) => <option key={f.id} value={f.id}>{f.brand} {f.type} {f.color}</option>)}
-                </select>
-              </div>
-              <div className="input-group">
-                <label>Printer (optional)</label>
-                <select value={form.printer_id} onChange={(e) => setForm((f) => ({ ...f, printer_id: e.target.value }))}>
-                  <option value="">— None —</option>
-                  {printerRows.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-              </div>
+              <div className="input-group"><label>Filament (optional)</label><select value={form.filament_id} onChange={(e) => setForm((f) => ({ ...f, filament_id: e.target.value }))}><option value="">— None —</option>{filaments.map((f) => <option key={f.id} value={f.id}>{f.brand} {f.type} {f.color}</option>)}</select></div>
+              <div className="input-group"><label>Printer (optional)</label><select value={form.printer_id} onChange={(e) => setForm((f) => ({ ...f, printer_id: e.target.value }))}><option value="">— None —</option>{printerRows.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
             </div>
-
             <div className="input-row">
-              <div className="input-group">
-                <label>Est. Weight</label>
-                <div className="input-addon">
-                  <input type="number" min={1} step={1} placeholder="e.g. 120" value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
-                  <span className="input-suffix">g</span>
-                </div>
-              </div>
-              <div className="input-group">
-                <label>Est. Time</label>
-                <div className="input-addon">
-                  <input type="number" min={0} step={0.5} placeholder="e.g. 5.5" value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
-                  <span className="input-suffix">hrs</span>
-                </div>
-              </div>
+              <div className="input-group"><label>Est. Weight</label><div className="input-addon"><input type="number" min={1} step={1} placeholder="e.g. 120" value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} /><span className="input-suffix">g</span></div></div>
+              <div className="input-group"><label>Est. Time</label><div className="input-addon"><input type="number" min={0} step={0.5} placeholder="e.g. 5.5" value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} /><span className="input-suffix">hrs</span></div></div>
             </div>
-
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>{opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setShowForm(false); setEditOrder(null); setForm(emptyForm); }} disabled={opLoading}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>
-                {opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}
-              </button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>{opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}</button>
             </div>
           </div>
         </div>
@@ -2158,6 +2324,7 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
   );
 }
 
+// ─── JOBS VIEW ────────────────────────────────────────────────────────────────
 function JobsView({ dbJobs, reloadDbJobs }) {
   const [payingJob, setPayingJob] = useState(null);
   const [payForm, setPayForm] = useState({ amount: "", method: "cash", reference_number: "" });
@@ -2169,12 +2336,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
     if (!payingJob || !payForm.amount) return;
     setPayLoading(true); setPayError("");
     try {
-      const { error: payErr } = await supabase.from("payments").insert({
-        job_id: payingJob.id,
-        amount: Number(payForm.amount),
-        method: payForm.method,
-        reference_number: payForm.reference_number || null,
-      });
+      const { error: payErr } = await supabase.from("payments").insert({ job_id: payingJob.id, amount: Number(payForm.amount), method: payForm.method, reference_number: payForm.reference_number || null });
       if (payErr) throw new Error(payErr.message);
       const { error: jobErr } = await supabase.from("jobs").update({ payment_status: "paid" }).eq("id", payingJob.id);
       if (jobErr) throw new Error(jobErr.message);
@@ -2198,7 +2360,6 @@ function JobsView({ dbJobs, reloadDbJobs }) {
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>◷</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Complete a job via New Job to see it here — data persists after refresh</div>
         </div>
       </div>
     );
@@ -2206,7 +2367,6 @@ function JobsView({ dbJobs, reloadDbJobs }) {
   const total = dbJobs.reduce((s, j) => s + Number(j.charged_total || 0), 0);
   const totalProfit = dbJobs.reduce((s, j) => s + Number(j.profit_total || 0), 0);
   const unpaidCount = dbJobs.filter((j) => j.payment_status !== "paid").length;
-
   const JOB_STATUSES = ["pending", "printing", "done", "cancelled"];
   const PAYMENT_COLORS = {
     paid: { bg: "rgba(0,229,160,0.12)", border: "rgba(0,229,160,0.3)", text: "#00E5A0" },
@@ -2225,11 +2385,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
       <div className="card">
         <table className="table">
           <thead>
-            <tr>
-              <th>ID</th><th>Date</th><th>Client</th><th>Type</th>
-              <th>Filament</th><th>Params</th><th>Revenue</th><th>Profit</th>
-              <th>Status</th><th>Payment</th><th>Actions</th>
-            </tr>
+            <tr><th>ID</th><th>Date</th><th>Client</th><th>Type</th><th>Filament</th><th>Params</th><th>Revenue</th><th>Profit</th><th>Status</th><th>Payment</th><th>Actions</th></tr>
           </thead>
           <tbody>
             {dbJobs.map((j) => {
@@ -2240,32 +2396,19 @@ function JobsView({ dbJobs, reloadDbJobs }) {
                   <td style={{ fontSize: 11, whiteSpace: "nowrap" }}>{j.created_at ? new Date(j.created_at).toLocaleDateString() : "—"}</td>
                   <td style={{ fontWeight: 500, color: T.text }}>{j.client_name}</td>
                   <td><span className="tag">{j.job_type}</span></td>
-                  <td style={{ fontSize: 11, color: T.textMuted }}>
-                    {j.filaments ? `${j.filaments.brand} ${j.filaments.type} ${j.filaments.color}` : "—"}
-                  </td>
+                  <td style={{ fontSize: 11, color: T.textMuted }}>{j.filaments ? `${j.filaments.brand} ${j.filaments.type} ${j.filaments.color}` : "—"}</td>
                   <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.total_grams}g · {Number(j.total_hours).toFixed(2)}h</td>
                   <td style={{ fontFamily: T.fontMono, color: T.text, fontWeight: 600 }}>₱{Number(j.charged_total).toFixed(2)}</td>
                   <td style={{ fontFamily: T.fontMono, color: T.accent }}>+₱{Number(j.profit_total).toFixed(2)}</td>
                   <td>
-                    <select
-                      value={j.status}
-                      onChange={(e) => updateJobStatus(j.id, e.target.value)}
-                      disabled={updatingStatus === j.id}
-                      style={{ fontSize: 11, padding: "3px 6px", background: T.bgInput, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 5 }}
-                    >
+                    <select value={j.status} onChange={(e) => updateJobStatus(j.id, e.target.value)} disabled={updatingStatus === j.id} style={{ fontSize: 11, padding: "3px 6px", background: T.bgInput, border: `1px solid ${T.border}`, color: T.textMuted, borderRadius: 5 }}>
                       {JOB_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
                   </td>
-                  <td>
-                    <span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 600, background: pc.bg, border: `1px solid ${pc.border}`, color: pc.text }}>
-                      {j.payment_status || "unpaid"}
-                    </span>
-                  </td>
+                  <td><span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 600, background: pc.bg, border: `1px solid ${pc.border}`, color: pc.text }}>{j.payment_status || "unpaid"}</span></td>
                   <td>
                     {j.payment_status !== "paid" && (
-                      <button className="btn btn-ghost" style={{ padding: "3px 9px", fontSize: 11 }} onClick={() => { setPayingJob(j); setPayForm({ amount: String(j.charged_total), method: "cash", reference_number: "" }); setPayError(""); }}>
-                        💳 Pay
-                      </button>
+                      <button className="btn btn-ghost" style={{ padding: "3px 9px", fontSize: 11 }} onClick={() => { setPayingJob(j); setPayForm({ amount: String(j.charged_total), method: "cash", reference_number: "" }); setPayError(""); }}>💳 Pay</button>
                     )}
                   </td>
                 </tr>
@@ -2275,32 +2418,18 @@ function JobsView({ dbJobs, reloadDbJobs }) {
         </table>
       </div>
 
-      {/* Payment modal */}
       {payingJob && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setPayingJob(null)}>
-          <div className="modal">
+          <div className="modal" style={{ width: 420 }}>
             <h3>Record Payment</h3>
             <div style={{ marginBottom: 16, padding: "10px 14px", background: T.bgInput, borderRadius: 8, fontSize: 13 }}>
               <strong style={{ color: T.text }}>{payingJob.client_name}</strong>
               <span style={{ color: T.textMuted }}> · {payingJob.job_type}</span>
               <div style={{ color: T.accent, fontFamily: T.fontMono, marginTop: 4, fontSize: 15, fontWeight: 600 }}>₱{Number(payingJob.charged_total).toFixed(2)}</div>
             </div>
-            <div className="input-group">
-              <label>Amount (₱)</label>
-              <input type="number" min={0} step={0.01} value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} />
-            </div>
-            <div className="input-group">
-              <label>Payment Method</label>
-              <select value={payForm.method} onChange={(e) => setPayForm((f) => ({ ...f, method: e.target.value }))}>
-                {["cash", "gcash", "maya", "bank_transfer", "card", "other"].map((m) => (
-                  <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1).replace("_", " ")}</option>
-                ))}
-              </select>
-            </div>
-            <div className="input-group">
-              <label>Reference Number (optional)</label>
-              <input type="text" placeholder="e.g. GCash ref #" value={payForm.reference_number} onChange={(e) => setPayForm((f) => ({ ...f, reference_number: e.target.value }))} />
-            </div>
+            <div className="input-group"><label>Amount (₱)</label><input type="number" min={0} step={0.01} value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} /></div>
+            <div className="input-group"><label>Payment Method</label><select value={payForm.method} onChange={(e) => setPayForm((f) => ({ ...f, method: e.target.value }))}>{["cash", "gcash", "maya", "bank_transfer", "card", "other"].map((m) => <option key={m} value={m}>{m.charAt(0).toUpperCase() + m.slice(1).replace("_", " ")}</option>)}</select></div>
+            <div className="input-group"><label>Reference Number (optional)</label><input type="text" placeholder="e.g. GCash ref #" value={payForm.reference_number} onChange={(e) => setPayForm((f) => ({ ...f, reference_number: e.target.value }))} /></div>
             {payError && <div className="error-msg" style={{ marginBottom: 8 }}>{payError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setPayingJob(null)} disabled={payLoading}>Cancel</button>
@@ -2313,6 +2442,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
   );
 }
 
+// ─── ANALYTICS VIEW ───────────────────────────────────────────────────────────
 function AnalyticsView({ dbJobs }) {
   if (dbJobs.length === 0)
     return (
@@ -2320,7 +2450,6 @@ function AnalyticsView({ dbJobs }) {
         <div className="page-header"><div className="page-title">Analytics</div></div>
         <div className="card" style={{ textAlign: "center", padding: "48px" }}>
           <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Complete and finalize jobs to see analytics here</div>
         </div>
       </div>
     );
@@ -2329,28 +2458,13 @@ function AnalyticsView({ dbJobs }) {
   const totalCost = dbJobs.reduce((s, j) => s + Number(j.real_total || 0), 0);
   const totalProfit = dbJobs.reduce((s, j) => s + Number(j.profit_total || 0), 0);
   const avgMargin = totalRev > 0 ? (totalProfit / totalRev) * 100 : 0;
-
-  // By job type
   const byType = {};
   dbJobs.forEach((j) => { if (j.job_type) byType[j.job_type] = (byType[j.job_type] || 0) + 1; });
   const maxTypeCount = Math.max(...Object.values(byType), 1);
-
-  // Profit by component from cost_result jsonb
   const filamentProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.filament?.profit ?? 0), 0);
   const elecProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.electricity?.profit ?? 0), 0);
   const printerProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.printer_usage?.profit ?? 0), 0);
   const maxProfit2 = Math.max(filamentProfit, elecProfit, printerProfit, 0.01);
-
-  // Revenue over time (last 30 days)
-  const now = new Date();
-  const last30 = dbJobs.filter((j) => j.created_at && (now - new Date(j.created_at)) < 30 * 86400000);
-  const dailyRev = {};
-  last30.forEach((j) => {
-    const d = new Date(j.created_at).toLocaleDateString();
-    dailyRev[d] = (dailyRev[d] || 0) + Number(j.charged_total || 0);
-  });
-
-  // Payment stats
   const paidCount = dbJobs.filter((j) => j.payment_status === "paid").length;
   const unpaidRev = dbJobs.filter((j) => j.payment_status !== "paid").reduce((s, j) => s + Number(j.charged_total || 0), 0);
 
@@ -2373,7 +2487,7 @@ function AnalyticsView({ dbJobs }) {
           {[["Filament", filamentProfit], ["Electricity", elecProfit], ["Printer Usage", printerProfit]].map(([label, val]) => (
             <div key={label} className="profit-bar-wrap">
               <span className="profit-bar-label">{label}</span>
-              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(Math.max(val,0) / maxProfit2) * 100}%`, background: T.accent }} /></div>
+              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(Math.max(val, 0) / maxProfit2) * 100}%`, background: T.accent }} /></div>
               <span className="profit-bar-val">₱{val.toFixed(2)}</span>
             </div>
           ))}
