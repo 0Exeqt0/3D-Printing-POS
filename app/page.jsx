@@ -404,7 +404,6 @@ export default function App() {
   const [printerRows, setPrinterRows] = useState([]);
   const [pricingConfig, setPricingConfig] = useState(DEFAULT_PRICING_CONFIG);
   const [completedJobs, setCompletedJobs] = useState([]);
-  const [jobOrders, setJobOrders] = useState([]);
   const [dbJobs, setDbJobs] = useState([]);
   const [dbLoading, setDbLoading] = useState(true);
   const [dbError, setDbError] = useState("");
@@ -417,26 +416,22 @@ export default function App() {
           { data: filData, error: filErr },
           { data: prData, error: prErr },
           { data: psData, error: psErr },
-          { data: ordersData, error: ordersErr },
           { data: jobsData, error: jobsErr },
         ] = await Promise.all([
           supabase.from("filaments").select("*").eq("active", true).order("brand"),
           supabase.from("printers").select("*").eq("active", true).order("name"),
           supabase.from("pricing_settings").select("*").eq("id", "default").single(),
-          supabase.from("job_orders").select("*, filaments(brand,type,color), printers(name)").order("deadline", { ascending: true, nullsFirst: false }),
           supabase.from("jobs").select("*, filaments(brand,type,color,finish), job_printer_allocations(printer_id,percentage,printers(name))").order("created_at", { ascending: false }).limit(300),
         ]);
         if (filErr) throw new Error(`Filaments: ${filErr.message}`);
         if (prErr) throw new Error(`Printers: ${prErr.message}`);
         if (psErr && psErr.code !== "PGRST116") throw new Error(`Pricing: ${psErr.message}`);
-        if (ordersErr) console.warn("Job orders:", ordersErr.message);
         if (jobsErr) console.warn("Jobs:", jobsErr.message);
         setFilaments(filData || []);
         setPrinterRows(prData || []);
         const dbMap = {};
         for (const row of (prData || [])) dbMap[row.id] = dbPrinterToInternal(row);
         setPrinterDB(dbMap);
-        if (ordersData) setJobOrders(ordersData);
         if (jobsData) setDbJobs(jobsData);
         if (psData) setPricingConfig({
           electricity_rate: Number(psData.electricity_rate),
@@ -495,7 +490,6 @@ export default function App() {
   const [filSearch, setFilSearch] = useState("");
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
-  const [activeOrderId, setActiveOrderId] = useState(null);
 
   const filteredFils = filaments.filter(
     (f) => f.active && (filSearch === "" || `${f.brand} ${f.type} ${f.color}`.toLowerCase().includes(filSearch.toLowerCase()))
@@ -581,11 +575,6 @@ export default function App() {
         if (allocErr) console.warn("Printer alloc error:", allocErr.message);
       }
 
-      if (activeOrderId) {
-        await supabase.from("job_orders").update({ status: "Done", updated_at: new Date().toISOString() }).eq("id", activeOrderId);
-        setJobOrders((prev) => prev.map((o) => o.id === activeOrderId ? { ...o, status: "Done" } : o));
-      }
-
       await reloadDbJobs();
       const job = {
         id: jobData.id, date: new Date().toLocaleDateString(),
@@ -602,35 +591,11 @@ export default function App() {
     }
   };
 
-  const startJobFromOrder = (order) => {
-    setStep(1); setJobType(""); setSelectedPrinters([]); setSelectedFil(null);
-    setGrams(50); setHours(3); setCostResult(null); setCustomPrice(null);
-    setClientName(""); setDeadline(""); setNotes(""); setParts("");
-    setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
-    if (order.filament_id) {
-      const fil = filaments.find((f) => f.id === order.filament_id);
-      if (fil) setSelectedFil(fil);
-    }
-    if (order.printer_id) {
-      const hasPrinter = printerRows.find((p) => p.id === order.printer_id);
-      if (hasPrinter) setSelectedPrinters([{ id: order.printer_id, pct: 100 }]);
-    }
-    if (order.estimated_grams) setGrams(Number(order.estimated_grams));
-    if (order.estimated_hours) setHours(Number(order.estimated_hours));
-    setClientName(order.client_name || "");
-    setDeadline(order.deadline || "");
-    setNotes(order.description || "");
-    setParts(order.title || "");
-    setActiveOrderId(order.id);
-    setView("pos");
-    setStep(1);
-  };
-
   const resetJob = () => {
     setStep(1); setJobType(""); setSelectedPrinters([]); setSelectedFil(null);
     setGrams(50); setHours(3); setCostResult(null); setCustomPrice(null);
     setClientName(""); setDeadline(""); setNotes(""); setParts("");
-    setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
+    setShowReceipt(false); setSaveError("");
   };
 
   if (dbLoading) {
@@ -658,8 +623,7 @@ export default function App() {
             <div className="nav-label">Workflow</div>
             {[
               { id: "pos", label: "New Job" },
-              { id: "orders", label: "Job Orders" },
-              { id: "jobs", label: "Job History" },
+              { id: "jobs", label: "Job Orders" },
               { id: "inventory", label: "Filaments" },
               { id: "printers", label: "Printers" },
               { id: "parameters", label: "Parameters" },
@@ -694,7 +658,6 @@ export default function App() {
               finalizeJob={finalizeJob} saving={saving} saveError={saveError}
               pricingConfig={pricingConfig} setPricingConfig={setPricingConfig}
               reloadFilaments={reloadFilaments} reloadPrinters={reloadPrinters}
-              activeOrderId={activeOrderId} jobOrders={jobOrders}
             />
           )}
           {view === "pos" && showReceipt && completedJobs[0] && <ReceiptView job={completedJobs[0]} onNew={resetJob} />}
@@ -706,13 +669,6 @@ export default function App() {
               pricingConfig={pricingConfig} setPricingConfig={setPricingConfig}
               reloadFilaments={reloadFilaments} reloadPrinters={reloadPrinters}
               grams={grams} hours={hours} selectedFil={selectedFil} selectedPrinters={selectedPrinters}
-            />
-          )}
-          {view === "orders" && (
-            <JobOrdersView
-              jobOrders={jobOrders} setJobOrders={setJobOrders}
-              filaments={filaments} printerRows={printerRows}
-              startJobFromOrder={startJobFromOrder}
             />
           )}
           {view === "jobs" && <JobsView dbJobs={dbJobs} reloadDbJobs={reloadDbJobs} />}
@@ -742,7 +698,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
 
-  // Load all printers (including inactive) for this view
   useEffect(() => {
     loadPrinters();
   }, []);
@@ -754,7 +709,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
 
   const refreshAll = async () => {
     await loadPrinters();
-    // Also reload active printers for POS
     const { data } = await supabase.from("printers").select("*").eq("active", true).order("name");
     if (data) {
       setPrinterRows(data);
@@ -969,7 +923,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
         </div>
       )}
 
-      {/* Confirm delete modal */}
       {confirmDelete && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
           <div className="confirm-modal">
@@ -987,7 +940,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
         </div>
       )}
 
-      {/* Add / Edit modal */}
       {showForm && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowForm(false)}>
           <div className="modal">
@@ -996,7 +948,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
               {editPrinter ? "Update printer specs and rate configuration." : "Configure a new printer and its billing rates."}
             </p>
 
-            {/* Identity */}
             <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10 }}>Identity</div>
             <div className="input-row">
               <div className="input-group">
@@ -1019,7 +970,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
               </div>
             </div>
 
-            {/* Specs */}
             <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Specs</div>
             <div className="input-row">
               <div className="input-group">
@@ -1045,7 +995,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
               </div>
             </div>
 
-            {/* Billing rates */}
             <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Billing Rates</div>
             <div style={{ padding: "10px 14px", background: "rgba(91,156,246,0.07)", border: "1px solid rgba(91,156,246,0.18)", borderRadius: 8, fontSize: 11, color: T.info, marginBottom: 14, lineHeight: 1.6 }}>
               <strong>How rates work:</strong> Final printer charge = <span style={{ fontFamily: T.fontMono }}>base_rate × hours × labor × multiplier</span>. Electricity is computed separately from wattage. Multicolor adds 8% electricity surcharge.
@@ -1084,7 +1033,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
               </div>
             </div>
 
-            {/* Live rate preview */}
             {form.base_rate && form.labor && form.multiplier && (
               <div style={{ padding: "10px 14px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 9, fontSize: 12, marginBottom: 12 }}>
                 <div style={{ color: T.textMuted, marginBottom: 4 }}>Rate preview (per hour):</div>
@@ -1111,24 +1059,13 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
 }
 
 // ─── POS VIEW ─────────────────────────────────────────────────────────────────
-function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows, filaments, filSearch, setFilSearch, selectedFil, setSelectedFil, grams, setGrams, hours, setHours, costResult, customPrice, setCustomPrice, clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts, finalizeJob, saving, saveError, pricingConfig, activeOrderId, jobOrders }) {
-  const activeOrder = activeOrderId ? jobOrders?.find((o) => o.id === activeOrderId) : null;
+function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selectedPrinters, togglePrinter, setPrinterPct, printerDB, printerRows, filaments, filSearch, setFilSearch, selectedFil, setSelectedFil, grams, setGrams, hours, setHours, costResult, customPrice, setCustomPrice, clientName, setClientName, deadline, setDeadline, notes, setNotes, parts, setParts, finalizeJob, saving, saveError, pricingConfig }) {
   return (
     <div>
       <div className="page-header">
         <div className="page-title">New Print Job</div>
         <div className="page-sub">Follow the steps to configure and price your job</div>
       </div>
-
-      {activeOrder && (
-        <div style={{ marginBottom: 16, padding: "10px 16px", background: "rgba(91,156,246,0.10)", border: "1px solid rgba(91,156,246,0.3)", borderRadius: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, color: T.info }}>📋 From Job Order:</span>
-          <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{activeOrder.title}</span>
-          <span style={{ fontSize: 12, color: T.textMuted }}>· {activeOrder.client_name}</span>
-          {activeOrder.deadline && <span style={{ fontSize: 12, color: T.warn }}>· Due {activeOrder.deadline}</span>}
-          <span style={{ marginLeft: "auto", fontSize: 11, color: T.textDim }}>Will mark order Done on finalize</span>
-        </div>
-      )}
 
       <div className="stepper">
         {STEPS.map((s, i) => (
@@ -2084,247 +2021,7 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
   );
 }
 
-// ─── JOB ORDERS VIEW ──────────────────────────────────────────────────────────
-const ORDER_STATUSES = ["Queued", "Printing", "Post-Processing", "Done", "Cancelled"];
-const STATUS_COLORS = {
-  Queued:            { bg: "rgba(91,156,246,0.12)",  border: "rgba(91,156,246,0.3)",  text: "#5B9CF6" },
-  Printing:          { bg: "rgba(245,166,35,0.12)",  border: "rgba(245,166,35,0.3)",  text: "#F5A623" },
-  "Post-Processing": { bg: "rgba(155,125,255,0.12)", border: "rgba(155,125,255,0.3)", text: "#9B7DFF" },
-  Done:              { bg: "rgba(0,229,160,0.12)",   border: "rgba(0,229,160,0.3)",   text: "#00E5A0" },
-  Cancelled:         { bg: "rgba(255,92,92,0.12)",   border: "rgba(255,92,92,0.3)",   text: "#FF5C5C" },
-};
-
-function StatusBadge({ status }) {
-  const c = STATUS_COLORS[status] || STATUS_COLORS.Queued;
-  return <span style={{ padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600, background: c.bg, border: `1px solid ${c.border}`, color: c.text, whiteSpace: "nowrap" }}>{status}</span>;
-}
-
-function DeadlineBadge({ deadline }) {
-  if (!deadline) return <span style={{ color: T.textDim, fontSize: 12 }}>—</span>;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const d = new Date(deadline + "T00:00:00");
-  const diff = Math.round((d - today) / 86400000);
-  if (diff < 0) return <span style={{ fontSize: 12, color: T.danger, fontWeight: 600 }}>⚠ {deadline} (overdue)</span>;
-  if (diff === 0) return <span style={{ fontSize: 12, color: T.warn, fontWeight: 600 }}>⚡ Today</span>;
-  if (diff <= 2) return <span style={{ fontSize: 12, color: T.warn }}>{deadline} ({diff}d)</span>;
-  return <span style={{ fontSize: 12, color: T.textMuted }}>{deadline} ({diff}d)</span>;
-}
-
-function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder }) {
-  const PRIORITIES = ["Low", "Normal", "High", "Urgent"];
-  const PRIORITY_COLOR = { Low: T.textDim, Normal: T.textMuted, High: T.warn, Urgent: T.danger };
-  const emptyForm = { client_name: "", title: "", description: "", filament_id: "", printer_id: "", deadline: "", status: "Queued", priority: "Normal", estimated_grams: "", estimated_hours: "" };
-
-  const [showForm, setShowForm] = useState(false);
-  const [editOrder, setEditOrder] = useState(null);
-  const [form, setForm] = useState(emptyForm);
-  const [filterStatus, setFilterStatus] = useState("All");
-  const [sortBy, setSortBy] = useState("priority");
-  const [opLoading, setOpLoading] = useState(false);
-  const [opError, setOpError] = useState("");
-  const [confirmDel, setConfirmDel] = useState(null);
-
-  const openAdd = () => { setForm(emptyForm); setEditOrder(null); setShowForm(true); setOpError(""); };
-  const openEdit = (o) => {
-    setForm({ client_name: o.client_name || "", title: o.title || "", description: o.description || "", filament_id: o.filament_id || "", printer_id: o.printer_id || "", deadline: o.deadline || "", status: o.status || "Queued", priority: o.priority || "Normal", estimated_grams: o.estimated_grams ?? "", estimated_hours: o.estimated_hours ?? "" });
-    setEditOrder(o); setShowForm(true); setOpError("");
-  };
-
-  const reloadOrders = async () => {
-    const { data, error } = await supabase.from("job_orders").select("*, filaments(brand,type,color), printers(name)").order("deadline", { ascending: true, nullsFirst: false });
-    if (error) console.warn("Reload orders error:", error.message);
-    if (data) setJobOrders(data);
-  };
-
-  const saveOrder = async () => {
-    if (!form.client_name.trim() || !form.title.trim()) { setOpError("Client name and title are required."); return; }
-    setOpLoading(true); setOpError("");
-    const payload = {
-      client_name: form.client_name.trim(), title: form.title.trim(),
-      description: form.description || "", filament_id: form.filament_id || null,
-      printer_id: form.printer_id || null, deadline: form.deadline || null,
-      status: form.status, priority: form.priority,
-      estimated_grams: form.estimated_grams !== "" ? Number(form.estimated_grams) : null,
-      estimated_hours: form.estimated_hours !== "" ? Number(form.estimated_hours) : null,
-      updated_at: new Date().toISOString(),
-    };
-    try {
-      if (editOrder) {
-        const { error } = await supabase.from("job_orders").update(payload).eq("id", editOrder.id);
-        if (error) throw new Error(error.message);
-      } else {
-        const { error } = await supabase.from("job_orders").insert({ ...payload, created_at: new Date().toISOString() });
-        if (error) throw new Error(error.message);
-      }
-      await reloadOrders();
-      setShowForm(false); setEditOrder(null); setForm(emptyForm);
-    } catch (err) { setOpError(err.message || "Failed to save."); }
-    finally { setOpLoading(false); }
-  };
-
-  const updateStatus = async (id, status) => {
-    setJobOrders((prev) => prev.map((o) => o.id === id ? { ...o, status } : o));
-    await supabase.from("job_orders").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
-  };
-
-  const deleteOrder = async () => {
-    if (!confirmDel) return;
-    const id = confirmDel.id; setConfirmDel(null);
-    const { error } = await supabase.from("job_orders").delete().eq("id", id);
-    if (!error) setJobOrders((prev) => prev.filter((o) => o.id !== id));
-    else setOpError(error.message);
-  };
-
-  const filtered = [...jobOrders].filter((o) => filterStatus === "All" || o.status === filterStatus).sort((a, b) => {
-    if (sortBy === "priority") {
-      const pi = (p) => ["Urgent", "High", "Normal", "Low"].indexOf(p ?? "Normal");
-      const diff = pi(a.priority) - pi(b.priority); if (diff !== 0) return diff;
-      if (!a.deadline && !b.deadline) return 0; if (!a.deadline) return 1; if (!b.deadline) return -1;
-      return new Date(a.deadline) - new Date(b.deadline);
-    }
-    if (sortBy === "deadline") { if (!a.deadline && !b.deadline) return 0; if (!a.deadline) return 1; if (!b.deadline) return -1; return new Date(a.deadline) - new Date(b.deadline); }
-    if (sortBy === "status") return (a.status || "").localeCompare(b.status || "");
-    return new Date(b.created_at || 0) - new Date(a.created_at || 0);
-  });
-
-  const counts = ORDER_STATUSES.reduce((acc, s) => { acc[s] = jobOrders.filter((o) => o.status === s).length; return acc; }, {});
-
-  return (
-    <div>
-      <div className="inv-header">
-        <div>
-          <div className="page-title">Job Orders</div>
-          <div className="page-sub">{jobOrders.length} total · {counts.Queued || 0} queued · {counts.Printing || 0} printing</div>
-        </div>
-        <button className="btn btn-primary" onClick={openAdd}>+ Add Order</button>
-      </div>
-
-      {opError && <div style={{ marginBottom: 12, padding: "10px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>}
-
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}>
-          {["All", ...ORDER_STATUSES].map((s) => {
-            const c = s === "All" ? null : STATUS_COLORS[s];
-            const active = filterStatus === s;
-            return (
-              <button key={s} onClick={() => setFilterStatus(s)} style={{ padding: "4px 11px", borderRadius: 20, border: `1px solid ${active ? (c?.border ?? T.accent) : T.border}`, background: active ? (c?.bg ?? T.accentGlow) : "transparent", color: active ? (c?.text ?? T.accent) : T.textMuted, fontSize: 11, fontWeight: active ? 600 : 400, cursor: "pointer" }}>
-                {s}{s === "All" ? ` (${jobOrders.length})` : counts[s] ? ` (${counts[s]})` : ""}
-              </button>
-            );
-          })}
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <span style={{ fontSize: 11, color: T.textDim }}>Sort:</span>
-          {["priority", "deadline", "status", "created"].map((s) => (
-            <button key={s} onClick={() => setSortBy(s)} style={{ padding: "4px 9px", borderRadius: 6, border: `1px solid ${sortBy === s ? T.accent : T.border}`, background: sortBy === s ? T.accentGlow : "transparent", color: sortBy === s ? T.accent : T.textMuted, fontSize: 11, cursor: "pointer" }}>{s.charAt(0).toUpperCase() + s.slice(1)}</button>
-          ))}
-        </div>
-      </div>
-
-      {filtered.length === 0 ? (
-        <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
-          <div style={{ fontSize: 14, color: T.textMuted }}>{filterStatus === "All" ? "No job orders yet" : `No orders with status "${filterStatus}"`}</div>
-          {filterStatus === "All" && <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openAdd}>+ Add Order</button>}
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {filtered.map((order) => {
-            const filName = order.filaments ? `${order.filaments.brand} ${order.filaments.type} ${order.filaments.color}` : null;
-            const filColor = order.filaments ? getFilColor(order.filaments.color) : null;
-            const printerName = order.printers ? order.printers.name : null;
-            return (
-              <div key={order.id} className="card" style={{ padding: "14px 18px", marginBottom: 0, borderLeft: `3px solid ${STATUS_COLORS[order.status]?.text ?? T.border}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: T.text }}>{order.title}</span>
-                      <StatusBadge status={order.status} />
-                      <span style={{ fontSize: 11, fontWeight: 600, color: PRIORITY_COLOR[order.priority] ?? T.textMuted }}>
-                        {order.priority === "Urgent" ? "🔴" : order.priority === "High" ? "🟠" : order.priority === "Normal" ? "🟡" : "⚪"} {order.priority}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 4 }}>
-                      <strong style={{ color: T.text }}>{order.client_name}</strong>
-                      {filName && <> · <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: filColor, display: "inline-block" }} />{filName}</span></>}
-                      {printerName && <> · {printerName}</>}
-                    </div>
-                    {order.description && <div style={{ fontSize: 11, color: T.textDim, marginBottom: 4 }}>{order.description}</div>}
-                    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
-                      <span style={{ fontSize: 11, color: T.textMuted }}>Deadline: <DeadlineBadge deadline={order.deadline} /></span>
-                      {order.estimated_grams && <span style={{ fontSize: 11, color: T.textMuted }}>~<span style={{ fontFamily: T.fontMono, color: T.text }}>{order.estimated_grams}g</span></span>}
-                      {order.estimated_hours != null && order.estimated_hours !== "" && (
-                        <span style={{ fontSize: 11, color: T.textMuted }}>~<span style={{ fontFamily: T.fontMono, color: T.text }}>{Math.floor(Number(order.estimated_hours))}h {Math.round((Number(order.estimated_hours) % 1) * 60)}m</span></span>
-                      )}
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
-                    <select value={order.status} onChange={(e) => updateStatus(order.id, e.target.value)} style={{ fontSize: 11, padding: "4px 7px", background: STATUS_COLORS[order.status]?.bg ?? T.bgInput, border: `1px solid ${STATUS_COLORS[order.status]?.border ?? T.border}`, color: STATUS_COLORS[order.status]?.text ?? T.textMuted, borderRadius: 6, cursor: "pointer" }}>
-                      {ORDER_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
-                    </select>
-                    <div style={{ display: "flex", gap: 5 }}>
-                      {order.status !== "Done" && order.status !== "Cancelled" && (
-                        <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={async () => { await updateStatus(order.id, "Printing"); startJobFromOrder({ ...order, status: "Printing" }); }}>▶ Start Job</button>
-                      )}
-                      <button className="btn btn-ghost" style={{ padding: "4px 9px", fontSize: 11 }} onClick={() => openEdit(order)}>Edit</button>
-                      <button className="btn btn-danger" style={{ padding: "4px 9px", fontSize: 11 }} onClick={() => setConfirmDel(order)}>✕</button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {confirmDel && (
-        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDel(null)}>
-          <div className="confirm-modal">
-            <h3>Delete Order?</h3>
-            <p>Remove <strong style={{ color: T.text }}>{confirmDel.title}</strong> for {confirmDel.client_name}? This cannot be undone.</p>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmDel(null)}>Cancel</button>
-              <button className="btn btn-danger" style={{ flex: 1, background: "rgba(255,92,92,0.15)" }} onClick={deleteOrder}>Delete</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showForm && (
-        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowForm(false)}>
-          <div className="modal" style={{ width: 520 }}>
-            <h3>{editOrder ? "Edit Order" : "New Job Order"}</h3>
-            <div className="input-row">
-              <div className="input-group"><label>Client Name *</label><input type="text" placeholder="e.g. Maria Santos" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} /></div>
-              <div className="input-group"><label>Deadline</label><input type="date" value={form.deadline} onChange={(e) => setForm((f) => ({ ...f, deadline: e.target.value }))} /></div>
-            </div>
-            <div className="input-group"><label>Job Title *</label><input type="text" placeholder="e.g. Dragon figurine ×2, Phone stand" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} /></div>
-            <div className="input-group"><label>Description / Notes</label><textarea rows={2} placeholder="Color, special requirements…" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} /></div>
-            <div className="input-row">
-              <div className="input-group"><label>Priority</label><select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}>{PRIORITIES.map((p) => <option key={p}>{p}</option>)}</select></div>
-              <div className="input-group"><label>Status</label><select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>{ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}</select></div>
-            </div>
-            <div className="input-row">
-              <div className="input-group"><label>Filament (optional)</label><select value={form.filament_id} onChange={(e) => setForm((f) => ({ ...f, filament_id: e.target.value }))}><option value="">— None —</option>{filaments.map((f) => <option key={f.id} value={f.id}>{f.brand} {f.type} {f.color}</option>)}</select></div>
-              <div className="input-group"><label>Printer (optional)</label><select value={form.printer_id} onChange={(e) => setForm((f) => ({ ...f, printer_id: e.target.value }))}><option value="">— None —</option>{printerRows.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</select></div>
-            </div>
-            <div className="input-row">
-              <div className="input-group"><label>Est. Weight</label><div className="input-addon"><input type="number" min={1} step={1} placeholder="e.g. 120" value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} /><span className="input-suffix">g</span></div></div>
-              <div className="input-group"><label>Est. Time</label><div className="input-addon"><input type="number" min={0} step={0.5} placeholder="e.g. 5.5" value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} /><span className="input-suffix">hrs</span></div></div>
-            </div>
-            {opError && <div className="error-msg" style={{ marginBottom: 8 }}>{opError}</div>}
-            <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setShowForm(false); setEditOrder(null); setForm(emptyForm); }} disabled={opLoading}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>{opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}</button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ─── JOBS VIEW ────────────────────────────────────────────────────────────────
+// ─── JOBS VIEW (Job Orders) ──────────────────────────────────────────────────
 function JobsView({ dbJobs, reloadDbJobs }) {
   const [payingJob, setPayingJob] = useState(null);
   const [payForm, setPayForm] = useState({ amount: "", method: "cash", reference_number: "" });
@@ -2356,7 +2053,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
   if (dbJobs.length === 0)
     return (
       <div>
-        <div className="page-header"><div className="page-title">Job History</div></div>
+        <div className="page-header"><div className="page-title">Job Orders</div></div>
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>◷</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
@@ -2375,7 +2072,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
 
   return (
     <div>
-      <div className="page-header"><div className="page-title">Job History</div><div className="page-sub">{dbJobs.length} total jobs · {unpaidCount} unpaid</div></div>
+      <div className="page-header"><div className="page-title">Job Orders</div><div className="page-sub">{dbJobs.length} total jobs · {unpaidCount} unpaid</div></div>
       <div className="grid4" style={{ marginBottom: 20 }}>
         <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-val">₱{total.toFixed(2)}</div></div>
         <div className="stat-card"><div className="stat-label">Total Profit</div><div className="stat-val stat-profit">₱{totalProfit.toFixed(2)}</div></div>
