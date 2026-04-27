@@ -32,8 +32,20 @@ const DEFAULT_PRICING_CONFIG = {
   minimum_price: 100,
   markup_multiplier: 1.0,
   formula: "default_charged_total * markup_multiplier",
+  labor_rate: 0.20,
+  printer_fee_rate: 0.10,
+  markup_rate: 0.30,
+  job_type_multipliers: {
+    "Standard Print": 1.00,
+    "Prototype": 1.25,
+    "Production Run": 0.90,
+    "Multicolor": 1.35,
+    "Functional Part": 1.30,
+    "Display Model": 1.20,
+  },
 };
 
+// ─── DB → Internal (UPDATED: includes new rate fields) ────────────────────────
 function dbPrinterToInternal(row) {
   return {
     id: row.id,
@@ -43,6 +55,9 @@ function dbPrinterToInternal(row) {
     wattage: Number(row.wattage),
     multicolor: row.multicolor,
     buildVol: row.build_volume,
+    cost_per_gram: Number(row.cost_per_gram ?? 0.65),
+    cost_per_hour: Number(row.cost_per_hour ?? 8),
+    failure_rate: Number(row.failure_rate ?? 0.05),
     _p: {
       base: Number(row.base_rate),
       eff: Number(row.efficiency),
@@ -52,119 +67,97 @@ function dbPrinterToInternal(row) {
   };
 }
 
-function _evaluatePricingFormula(formula, variables) {
-  const safeFormula = String(formula || "").trim();
-  if (!safeFormula) return null;
-  if (!/^[0-9a-zA-Z_+\-*/()., %]+$/.test(safeFormula)) {
-    throw new Error("Formula contains unsupported characters.");
-  }
-  const keys = Object.keys(variables);
-  const values = keys.map((key) => variables[key]);
-  const fn = new Function(...keys, `"use strict"; return (${safeFormula});`);
-  const result = fn(...values);
-  if (!Number.isFinite(result)) throw new Error("Formula did not return a valid number.");
-  return result;
-}
-
+// ─── NEW COMPUTATION ENGINE ────────────────────────────────────────────────────
 function _computeEngine(job, PRINTER_DB) {
-  const { printers, filament, grams, hours, elecRate = 0.12, pricingConfig = DEFAULT_PRICING_CONFIG } = job;
+  const {
+    printers, filament, grams, hours,
+    pricingConfig = DEFAULT_PRICING_CONFIG,
+    jobType = "Standard Print",
+  } = job;
   if (!filament || !grams || !hours || !printers?.length) return null;
 
-  const trueCostKg = Number(filament.true_cost_per_kg ?? filament.price_per_kg ?? 0);
-  const sellingKg = Number(filament.selling_price_per_kg ?? 0);
-  const filamentReal = (grams / 1000) * trueCostKg;
-  const filamentCharged = (() => {
-    if (sellingKg > 0) return (grams / 1000) * sellingKg;
-    const base = filamentReal;
-    const typeMulti = { PLA: 1.6, "PLA+": 1.75, Silk: 2.1, PETG: 1.85 }[filament.type] ?? 1.7;
-    const finishMulti = { matte: 1.0, glossy: 1.05, silk: 1.15, metallic: 1.1 }[filament.finish] ?? 1.0;
-    return base * typeMulti * finishMulti;
-  })();
+  const laborRate      = Number(pricingConfig.labor_rate       ?? 0.20);
+  const printerFeeRate = Number(pricingConfig.printer_fee_rate ?? 0.10);
+  const markupRate     = Number(pricingConfig.markup_rate      ?? 0.30);
+  const minimumCharge  = Number(pricingConfig.minimum_price    ?? 100);
+  const jobTypeMultipliers = pricingConfig.job_type_multipliers ?? DEFAULT_PRICING_CONFIG.job_type_multipliers;
+  const jobTypeMultiplier  = Number(jobTypeMultipliers[jobType] ?? 1.00);
 
-  let elecReal = 0, elecCharged = 0, printerReal = 0, printerCharged = 0;
   const perPrinterBreakdown = [];
+  let totalRiskAdjustedCost = 0;
 
   for (const alloc of printers) {
     const p = PRINTER_DB[alloc.id];
     if (!p) continue;
-    const pct = alloc.pct / 100;
-    const pHours = hours * pct;
+    const pct    = alloc.pct / 100;
     const pGrams = grams * pct;
-    const er = (p.wattage / 1000) * pHours * elecRate;
-    const ec = er * p._p.eff * (p.multicolor ? 1.08 : 1.0);
-    const pr = pHours * p._p.base;
-    const pc = pr * p._p.mult * p._p.labor;
-    elecReal += er;
-    elecCharged += ec;
-    printerReal += pr;
-    printerCharged += pc;
+    const pHours = hours * pct;
+
+    const baseCost        = (p.cost_per_gram * pGrams) + (p.cost_per_hour * pHours);
+    const riskAdjustedCost = baseCost * (1 + p.failure_rate);
+    totalRiskAdjustedCost += riskAdjustedCost;
+
     perPrinterBreakdown.push({
-      id: p.id, name: p.name, pct: alloc.pct,
-      hours: +pHours.toFixed(2), grams: +pGrams.toFixed(1),
-      elec: { real: +er.toFixed(2), charged: +ec.toFixed(2) },
-      printer: { real: +pr.toFixed(2), charged: +pc.toFixed(2) },
+      id: p.id,
+      name: p.name,
+      pct: alloc.pct,
+      hours: +pHours.toFixed(2),
+      grams: +pGrams.toFixed(1),
+      costPerGram: p.cost_per_gram,
+      costPerHour: p.cost_per_hour,
+      failureRate: p.failure_rate,
+      baseCost: +baseCost.toFixed(2),
+      riskAdjustedCost: +riskAdjustedCost.toFixed(2),
+      isExpensive: false,
     });
   }
 
-  const totalReal = filamentReal + elecReal + printerReal;
-  const defaultChargedTotal = filamentCharged + elecCharged + printerCharged;
-  let formulaError = "";
-  let computedChargedTotal = defaultChargedTotal;
-
-  const elecKwh = +(printers.reduce((acc, alloc) => {
-    const p = PRINTER_DB[alloc.id]; if (!p) return acc;
-    return acc + (p.wattage / 1000) * (hours * alloc.pct / 100);
-  }, 0).toFixed(4));
-
-  try {
-    const formulaVariables = {
-      grams, hours,
-      filament_real: filamentReal, filament_charged: filamentCharged,
-      electricity_real: elecReal, electricity_charged: elecCharged,
-      printer_real: printerReal, printer_charged: printerCharged,
-      real_total: totalReal, default_charged_total: defaultChargedTotal,
-      markup_multiplier: Number(pricingConfig.markup_multiplier || 1),
-      minimum_price: Number(pricingConfig.minimum_price || 0),
-      electricity_rate: Number(pricingConfig.electricity_rate || 0),
-      filament_price_per_gram: trueCostKg / 1000,
-      filament_selling_per_gram: sellingKg > 0 ? sellingKg / 1000 : trueCostKg / 1000,
-      true_cost_per_kg: trueCostKg,
-      selling_price_per_kg: sellingKg > 0 ? sellingKg : trueCostKg,
-      elec_kwh: elecKwh,
-      machine_rate: printerReal, machine_charged: printerCharged,
-      filament_cost: filamentReal, filament_price: filamentCharged,
-      electricity_cost: elecReal, electricity_price: elecCharged,
-      total_cost: totalReal,
-      power_kw: hours > 0 ? elecKwh / hours : 0,
-      power_kwh: elecKwh, watt_hours: elecKwh * 1000,
-      print_hours: hours, print_grams: grams, labor_cost: printerCharged,
-    };
-    const formulaPrice = _evaluatePricingFormula(pricingConfig.formula, formulaVariables);
-    if (formulaPrice !== null) computedChargedTotal = formulaPrice;
-  } catch (err) {
-    formulaError = err.message || "Formula error. Using default engine price.";
+  // Flag most expensive printer
+  if (perPrinterBreakdown.length > 1) {
+    const maxCost = Math.max(...perPrinterBreakdown.map(p => p.riskAdjustedCost));
+    perPrinterBreakdown.forEach(p => { p.isExpensive = p.riskAdjustedCost === maxCost; });
   }
 
-  const totalCharged = Math.max(computedChargedTotal, Number(pricingConfig.minimum_price || 0));
-  const profit = totalCharged - totalReal;
-  const margin = totalCharged > 0 ? (profit / totalCharged) * 100 : 0;
+  const totalBaseCost      = totalRiskAdjustedCost;
+  const overheadMultiplier = 1 + laborRate + printerFeeRate + markupRate;
+  const priceBeforeJobType = totalBaseCost * overheadMultiplier;
+  const rawFinalPrice      = priceBeforeJobType * jobTypeMultiplier;
+  const finalPrice         = Math.max(rawFinalPrice, minimumCharge);
+  const isMinimumEnforced  = finalPrice > rawFinalPrice;
 
-  const printerList = Object.values(PRINTER_DB);
-  const lowestCost = printers.length === 1
-    ? PRINTER_DB[printers[0].id]?.name
-    : (printerList.reduce((a, b) => a._p.base < b._p.base ? a : b)?.name ?? "—");
-  const fastest = printerList.reduce((a, b) => a._p.eff > b._p.eff ? a : b)?.name ?? "—";
-  const highestProfit = printerList.reduce((a, b) => a._p.mult > b._p.mult ? a : b)?.name ?? "—";
+  const warnings = [];
+  for (const pp of perPrinterBreakdown) {
+    if (pp.failureRate > 0.15)
+      warnings.push(`${pp.name}: failure rate ${(pp.failureRate * 100).toFixed(0)}% is high — consider recalibration.`);
+  }
+  const safeMargin = totalBaseCost > 0 ? (finalPrice - totalBaseCost) / finalPrice : 0;
+  if (safeMargin < 0.20 && finalPrice > 0)
+    warnings.push(`Low margin: ${(safeMargin * 100).toFixed(1)}% — recommend at least 20% to cover overhead.`);
+
+  const profit = finalPrice - totalBaseCost;
+  const margin = finalPrice > 0 ? (profit / finalPrice) * 100 : 0;
 
   return {
-    filament: { real: +filamentReal.toFixed(2), charged: +filamentCharged.toFixed(2), profit: +(filamentCharged - filamentReal).toFixed(2) },
-    electricity: { real: +elecReal.toFixed(2), charged: +elecCharged.toFixed(2), profit: +(elecCharged - elecReal).toFixed(2) },
-    printer_usage: { real: +printerReal.toFixed(2), charged: +printerCharged.toFixed(2), profit: +(printerCharged - printerReal).toFixed(2) },
-    totals: { real: +totalReal.toFixed(2), charged: +totalCharged.toFixed(2), profit: +profit.toFixed(2), margin: +margin.toFixed(1) },
     per_printer: perPrinterBreakdown,
-    formula_error: formulaError,
-    recommendation: { lowest_cost: lowestCost, fastest, highest_profit: highestProfit },
-    _grams: grams, _hours: hours, _elecKwh: elecKwh,
+    totalBaseCost:      +totalBaseCost.toFixed(2),
+    priceBeforeJobType: +priceBeforeJobType.toFixed(2),
+    jobTypeMultiplier,
+    jobType,
+    laborRate,
+    printerFeeRate,
+    markupRate,
+    isMinimumEnforced,
+    warnings,
+    totals: {
+      real:     +totalBaseCost.toFixed(2),
+      charged:  +finalPrice.toFixed(2),
+      profit:   +profit.toFixed(2),
+      margin:   +margin.toFixed(1),
+    },
+    formula_error: "",
+    recommendation: { lowest_cost: "—", fastest: "—", highest_profit: "—" },
+    _grams: grams,
+    _hours: hours,
   };
 }
 
@@ -232,6 +225,7 @@ body, #root { background: ${T.bg}; min-height: 100vh; font-family: ${T.fontSans}
 .badge-warn { background: rgba(245,166,35,0.15); color: ${T.warn}; }
 .badge-info { background: rgba(91,156,246,0.15); color: ${T.info}; }
 .badge-purple { background: rgba(155,125,255,0.15); color: ${T.purple}; }
+.badge-danger { background: rgba(255,92,92,0.15); color: ${T.danger}; }
 label { font-size: 12px; color: ${T.textMuted}; display: block; margin-bottom: 6px; letter-spacing: 0.3px; }
 input[type=text], input[type=number], input[type=date], select, textarea {
   width: 100%; padding: 9px 12px; background: ${T.bgInput}; border: 1px solid ${T.border};
@@ -297,6 +291,7 @@ input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color:
 .page-sub { font-size: 13px; color: ${T.textMuted}; margin-top: 4px; }
 .error-msg { font-size: 12px; color: ${T.danger}; margin-top: 5px; }
 .validation-gate { padding: 10px 14px; background: rgba(255,92,92,0.08); border: 1px solid rgba(255,92,92,0.2); border-radius: 8px; font-size: 12px; color: ${T.danger}; margin-top: 12px; }
+.warn-gate { padding: 10px 14px; background: rgba(245,166,35,0.08); border: 1px solid rgba(245,166,35,0.25); border-radius: 8px; font-size: 12px; color: ${T.warn}; margin-top: 8px; }
 .nav-bottom { padding: 16px 12px; border-top: 1px solid ${T.border}; }
 .inv-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
 .search-box { position: relative; }
@@ -328,39 +323,24 @@ select option { background: ${T.bgCard}; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .db-error { padding: 20px 24px; background: rgba(255,92,92,0.08); border: 1px solid rgba(255,92,92,0.2); border-radius: 10px; font-size: 13px; color: ${T.danger}; margin-bottom: 16px; }
 .empty-state { text-align: center; padding: 40px 24px; color: ${T.textDim}; font-size: 13px; }
-.cmp-row { padding: 12px 0; border-top: 1px solid ${T.border}; }
-.cmp-row:first-child { border-top: none; }
-.cmp-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 7px; }
-.cmp-label { font-size: 13px; color: ${T.textMuted}; }
-.cmp-vals { display: flex; gap: 12px; font-family: ${T.fontMono}; font-size: 12px; }
-.cmp-real { color: ${T.textDim}; }
-.cmp-charged { color: ${T.text}; font-weight: 600; }
-.cmp-profit { color: ${T.accent}; }
-.dual-bar { position: relative; height: 8px; background: ${T.border}; border-radius: 4px; overflow: hidden; margin-bottom: 3px; }
-.dual-bar-real { position: absolute; left: 0; top: 0; height: 100%; background: ${T.textDim}; border-radius: 4px; transition: width 0.5s ease; opacity: 0.5; }
-.dual-bar-charged { position: absolute; left: 0; top: 0; height: 100%; background: ${T.accent}; border-radius: 4px; transition: width 0.5s ease; opacity: 0.75; }
-.dual-bar-legend { display: flex; gap: 12px; margin-top: 2px; }
-.dual-bar-legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: ${T.textDim}; }
-.dual-bar-legend-dot { width: 8px; height: 4px; border-radius: 2px; }
-.params-field-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid ${T.border}; }
-.params-field-row:last-child { border-bottom: none; }
-.params-field-info { flex: 1; min-width: 0; }
-.params-field-name { font-size: 13px; color: ${T.text}; font-weight: 500; display: flex; align-items: center; gap: 8px; }
-.params-field-sub { font-size: 11px; color: ${T.textDim}; margin-top: 2px; font-family: ${T.fontMono}; }
+.printer-breakdown-card { background: ${T.bgInput}; border: 1.5px solid ${T.border}; border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; transition: border-color 0.15s; }
+.printer-breakdown-card.expensive { border-color: rgba(245,166,35,0.5); }
+.engine-formula-box { background: rgba(0,229,160,0.05); border: 1px solid rgba(0,229,160,0.2); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+.formula-row { display: flex; justify-content: space-between; align-items: center; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 12px; }
+.formula-row:last-child { border-bottom: none; }
+.formula-label { color: ${T.textMuted}; }
+.formula-val { color: ${T.text}; font-family: ${T.fontMono}; font-weight: 500; }
+.formula-val.accent { color: ${T.accent}; }
+.formula-val.warn { color: ${T.warn}; }
+.formula-val.info { color: ${T.info}; }
+.section-hint { font-size: 11px; color: ${T.textDim}; padding: 8px 12px; background: rgba(255,255,255,0.02); border-radius: 7px; border: 1px solid ${T.border}; margin-bottom: 16px; line-height: 1.5; }
 .confirm-modal { background: ${T.bgCard}; border: 1px solid rgba(255,92,92,0.3); border-radius: 16px; padding: 28px; width: 400px; max-width: 90vw; }
 .confirm-modal h3 { font-size: 16px; font-weight: 600; color: ${T.text}; margin-bottom: 10px; }
 .confirm-modal p { font-size: 13px; color: ${T.textMuted}; margin-bottom: 20px; line-height: 1.5; }
-.printer-inv-card { background: ${T.bgInput}; border: 1.5px solid ${T.border}; border-radius: 12px; padding: 16px 18px; transition: border-color 0.15s; }
-.printer-inv-card:hover { border-color: ${T.borderHi}; }
 .printer-rate-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid ${T.border}; }
 .printer-rate-item { text-align: center; }
 .printer-rate-label { font-size: 10px; color: ${T.textDim}; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px; }
 .printer-rate-val { font-size: 13px; font-weight: 600; color: ${T.text}; font-family: ${T.fontMono}; }
-.section-hint { font-size: 11px; color: ${T.textDim}; padding: 8px 12px; background: rgba(255,255,255,0.02); border-radius: 7px; border: 1px solid ${T.border}; margin-bottom: 16px; line-height: 1.5; }
-.toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid ${T.border}; }
-.toggle-row:last-child { border-bottom: none; }
-.toggle-label { font-size: 13px; color: ${T.text}; }
-.toggle-sub { font-size: 11px; color: ${T.textDim}; margin-top: 2px; }
 
 @media (max-width: 860px) {
   body, #root { min-height: 100dvh; }
@@ -402,7 +382,7 @@ export default function App() {
   const [filaments, setFilaments] = useState([]);
   const [printerDB, setPrinterDB] = useState({});
   const [printerRows, setPrinterRows] = useState([]);
-  const [pricingConfig, setPricingConfig] = useState(DEFAULT_PRICING_CONFIG);
+  const [pricingConfig, setPricingConfig] = useState(null);
   const [completedJobs, setCompletedJobs] = useState([]);
   const [dbJobs, setDbJobs] = useState([]);
   const [dbLoading, setDbLoading] = useState(true);
@@ -433,12 +413,20 @@ export default function App() {
         for (const row of (prData || [])) dbMap[row.id] = dbPrinterToInternal(row);
         setPrinterDB(dbMap);
         if (jobsData) setDbJobs(jobsData);
-        if (psData) setPricingConfig({
-          electricity_rate: Number(psData.electricity_rate),
-          minimum_price: Number(psData.minimum_price),
-          markup_multiplier: Number(psData.markup_multiplier),
-          formula: psData.formula,
-        });
+        if (psData) {
+          setPricingConfig({
+            electricity_rate: psData.electricity_rate,
+            minimum_price: psData.minimum_price,
+            markup_multiplier: psData.markup_multiplier,
+            formula: psData.formula,
+            labor_rate: psData.labor_rate ?? 0.20,
+            printer_fee_rate: psData.printer_fee_rate ?? 0.10,
+            markup_rate: psData.markup_rate ?? 0.30,
+            job_type_multipliers: psData.job_type_multipliers ?? DEFAULT_PRICING_CONFIG.job_type_multipliers,
+          });
+        } else {
+          setDbError("Pricing settings not found. Please go to Settings and save configuration.");
+        }
       } catch (err) {
         setDbError(err.message || "Failed to load data from database.");
       } finally {
@@ -538,13 +526,17 @@ export default function App() {
     }
   }, [step, jobType, selectedPrinters, selectedFil, grams, hours, costResult, clientName]);
 
+  // ─── Real-time recalculation on step 5 ──────────────────────────────────────
   useEffect(() => {
-    if (step === 5 && selectedFil && grams && hours && selectedPrinters.length > 0) {
-      const r = _computeEngine({ printers: selectedPrinters, filament: selectedFil, grams, hours, elecRate: pricingConfig.electricity_rate, pricingConfig }, printerDB);
+    if (step === 5 && selectedFil && grams && hours && selectedPrinters.length > 0 && pricingConfig) {
+      const r = _computeEngine(
+        { printers: selectedPrinters, filament: selectedFil, grams, hours, pricingConfig, jobType },
+        printerDB
+      );
       setCostResult(r);
       if (r) setCustomPrice(r.totals.charged);
     }
-  }, [step, selectedFil, grams, hours, selectedPrinters, pricingConfig, printerDB]);
+  }, [step, selectedFil, grams, hours, selectedPrinters, pricingConfig, printerDB, jobType]);
 
   const goNext = () => { if (stepValid()) setStep((s) => Math.min(8, s + 1)); };
   const goBack = () => { setStep((s) => Math.max(1, s - 1)); if (step <= 5) setCostResult(null); };
@@ -686,6 +678,7 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
     name: "", brand: "", model: "", wattage: 200,
     build_volume: "", multicolor: false, active: true,
     base_rate: 5, efficiency: 1.2, labor: 1.0, multiplier: 1.5,
+    cost_per_gram: 0.65, cost_per_hour: 8.00, failure_rate: 0.05,
   };
 
   const [allPrinters, setAllPrinters] = useState([]);
@@ -698,9 +691,7 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [showInactive, setShowInactive] = useState(false);
 
-  useEffect(() => {
-    loadPrinters();
-  }, []);
+  useEffect(() => { loadPrinters(); }, []);
 
   const loadPrinters = async () => {
     const { data, error } = await supabase.from("printers").select("*").order("name");
@@ -718,78 +709,60 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
     }
   };
 
-  const openAdd = () => {
-    setForm(EMPTY_FORM);
-    setEditPrinter(null);
-    setShowForm(true);
-    setOpError("");
-  };
-
+  const openAdd = () => { setForm(EMPTY_FORM); setEditPrinter(null); setShowForm(true); setOpError(""); };
   const openEdit = (p) => {
     setForm({
       name: p.name, brand: p.brand || "", model: p.model || "",
       wattage: p.wattage, build_volume: p.build_volume || "",
       multicolor: p.multicolor, active: p.active,
-      base_rate: p.base_rate, efficiency: p.efficiency,
-      labor: p.labor, multiplier: p.multiplier,
+      base_rate: p.base_rate, efficiency: p.efficiency, labor: p.labor, multiplier: p.multiplier,
+      cost_per_gram: p.cost_per_gram ?? 0.65,
+      cost_per_hour: p.cost_per_hour ?? 8.00,
+      failure_rate: p.failure_rate ?? 0.05,
     });
-    setEditPrinter(p);
-    setShowForm(true);
-    setOpError("");
+    setEditPrinter(p); setShowForm(true); setOpError("");
   };
-
   const openDupe = (p) => {
     setForm({
       name: p.name + " (Copy)", brand: p.brand || "", model: p.model || "",
       wattage: p.wattage, build_volume: p.build_volume || "",
       multicolor: p.multicolor, active: true,
-      base_rate: p.base_rate, efficiency: p.efficiency,
-      labor: p.labor, multiplier: p.multiplier,
+      base_rate: p.base_rate, efficiency: p.efficiency, labor: p.labor, multiplier: p.multiplier,
+      cost_per_gram: p.cost_per_gram ?? 0.65,
+      cost_per_hour: p.cost_per_hour ?? 8.00,
+      failure_rate: p.failure_rate ?? 0.05,
     });
-    setEditPrinter(null);
-    setShowForm(true);
-    setOpError("");
+    setEditPrinter(null); setShowForm(true); setOpError("");
   };
 
   const savePrinter = async () => {
     if (!form.name.trim()) { setOpError("Printer name is required."); return; }
     if (!form.wattage || Number(form.wattage) <= 0) { setOpError("Wattage must be greater than 0."); return; }
+    const fr = Number(form.failure_rate);
+    if (fr < 0 || fr > 1) { setOpError("Failure rate must be between 0 and 1 (e.g. 0.05 = 5%)."); return; }
     setOpLoading(true); setOpError("");
-
     const payload = {
-      name: form.name.trim(),
-      brand: form.brand.trim() || null,
-      model: form.model.trim() || null,
-      wattage: Number(form.wattage),
-      build_volume: form.build_volume.trim() || null,
-      multicolor: !!form.multicolor,
-      active: !!form.active,
-      base_rate: Number(form.base_rate) || 0,
-      efficiency: Number(form.efficiency) || 1,
-      labor: Number(form.labor) || 1,
-      multiplier: Number(form.multiplier) || 1,
+      name: form.name.trim(), brand: form.brand.trim() || null, model: form.model.trim() || null,
+      wattage: Number(form.wattage), build_volume: form.build_volume.trim() || null,
+      multicolor: !!form.multicolor, active: !!form.active,
+      base_rate: Number(form.base_rate) || 0, efficiency: Number(form.efficiency) || 1,
+      labor: Number(form.labor) || 1, multiplier: Number(form.multiplier) || 1,
+      cost_per_gram: Number(form.cost_per_gram) || 0,
+      cost_per_hour: Number(form.cost_per_hour) || 0,
+      failure_rate: Number(form.failure_rate) || 0,
       updated_at: new Date().toISOString(),
     };
-
     try {
       if (editPrinter) {
         const { error } = await supabase.from("printers").update(payload).eq("id", editPrinter.id);
         if (error) throw new Error(error.message);
       } else {
-        const { error } = await supabase.from("printers").insert({
-          ...payload, created_at: new Date().toISOString(),
-        });
+        const { error } = await supabase.from("printers").insert({ ...payload, created_at: new Date().toISOString() });
         if (error) throw new Error(error.message);
       }
-      await refreshAll();
-      setShowForm(false);
-      setEditPrinter(null);
-      setForm(EMPTY_FORM);
-    } catch (err) {
-      setOpError(err.message || "Failed to save printer.");
-    } finally {
-      setOpLoading(false);
-    }
+      await refreshAll(); setShowForm(false); setEditPrinter(null); setForm(EMPTY_FORM);
+    } catch (err) { setOpError(err.message || "Failed to save printer."); }
+    finally { setOpLoading(false); }
   };
 
   const toggleActive = async (p) => {
@@ -804,16 +777,10 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
     setConfirmDelete(null);
     try {
       const { error } = await supabase.from("printers").delete().eq("id", id);
-      if (error) {
-        setOpError(`Cannot delete "${confirmDelete.name}": ${error.message}. Remove associated job allocations first.`);
-      } else {
-        await refreshAll();
-      }
-    } catch (err) {
-      setOpError(err.message || "Failed to delete printer.");
-    } finally {
-      setDeleteLoading(false);
-    }
+      if (error) setOpError(`Cannot delete "${confirmDelete.name}": ${error.message}.`);
+      else await refreshAll();
+    } catch (err) { setOpError(err.message || "Failed to delete printer."); }
+    finally { setDeleteLoading(false); }
   };
 
   const displayed = allPrinters.filter(p => showInactive ? true : p.active);
@@ -843,12 +810,11 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
       )}
 
       <div className="section-hint">
-        <strong style={{ color: T.text }}>Rate fields explained:</strong>{" "}
+        <strong style={{ color: T.text }}>Calculator fields:</strong>{" "}
         <span style={{ color: T.textMuted }}>
-          <strong style={{ color: T.info }}>Base Rate</strong> = ₱/hr machine cost ·{" "}
-          <strong style={{ color: T.info }}>Efficiency</strong> = electricity markup multiplier ·{" "}
-          <strong style={{ color: T.info }}>Labor</strong> = labor fee multiplier on machine rate ·{" "}
-          <strong style={{ color: T.info }}>Markup</strong> = final profit multiplier applied to printer cost
+          <strong style={{ color: T.info }}>Cost/gram</strong> = material cost charged per gram ·{" "}
+          <strong style={{ color: T.info }}>Cost/hr</strong> = machine time rate ·{" "}
+          <strong style={{ color: T.warn }}>Failure Rate</strong> = risk buffer (0.05 = 5%) · Applied as: <span style={{ fontFamily: T.fontMono, color: T.accent }}>base_cost × (1 + failure_rate)</span>
         </span>
       </div>
 
@@ -856,7 +822,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>🖨️</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>No printers found</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Add your first printer to get started</div>
           <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openAdd}>+ Add Printer</button>
         </div>
       ) : (
@@ -865,11 +830,10 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
             <thead>
               <tr>
                 <th>Printer</th>
-                <th>Specs</th>
-                <th>Base Rate</th>
-                <th>Efficiency</th>
-                <th>Labor ×</th>
-                <th>Markup ×</th>
+                <th>Wattage</th>
+                <th>Cost/gram</th>
+                <th>Cost/hr</th>
+                <th>Failure Rate</th>
                 <th>Status</th>
                 <th>Actions</th>
               </tr>
@@ -885,13 +849,14 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
                       {p.build_volume && <span className="tag">{p.build_volume}</span>}
                     </div>
                   </td>
+                  <td><span className="badge badge-info">{p.wattage}W</span></td>
+                  <td style={{ fontFamily: T.fontMono, color: T.info }}>₱{Number(p.cost_per_gram ?? 0).toFixed(4)}/g</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>₱{Number(p.cost_per_hour ?? 0).toFixed(2)}/hr</td>
                   <td>
-                    <span className="badge badge-info">{p.wattage}W</span>
+                    <span style={{ fontFamily: T.fontMono, color: Number(p.failure_rate ?? 0) > 0.15 ? T.danger : Number(p.failure_rate ?? 0) > 0.08 ? T.warn : T.textMuted }}>
+                      {(Number(p.failure_rate ?? 0) * 100).toFixed(1)}%
+                    </span>
                   </td>
-                  <td style={{ fontFamily: T.fontMono, color: T.text }}>₱{Number(p.base_rate).toFixed(2)}/hr</td>
-                  <td style={{ fontFamily: T.fontMono, color: T.info }}>×{Number(p.efficiency).toFixed(2)}</td>
-                  <td style={{ fontFamily: T.fontMono, color: T.warn }}>×{Number(p.labor).toFixed(2)}</td>
-                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>×{Number(p.multiplier).toFixed(2)}</td>
                   <td>
                     <span style={{
                       padding: "3px 9px", borderRadius: 6, fontSize: 11, fontWeight: 600,
@@ -906,11 +871,7 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
                     <div style={{ display: "flex", gap: 5 }}>
                       <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(p)}>Edit</button>
                       <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openDupe(p)}>Dupe</button>
-                      <button
-                        className="btn btn-ghost"
-                        style={{ padding: "4px 10px", fontSize: 11, color: p.active ? T.warn : T.accent, borderColor: p.active ? "rgba(245,166,35,0.3)" : T.accentDim }}
-                        onClick={() => toggleActive(p)}
-                      >
+                      <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11, color: p.active ? T.warn : T.accent, borderColor: p.active ? "rgba(245,166,35,0.3)" : T.accentDim }} onClick={() => toggleActive(p)}>
                         {p.active ? "Disable" : "Enable"}
                       </button>
                       <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => { setConfirmDelete(p); setOpError(""); }} disabled={deleteLoading}>✕</button>
@@ -927,11 +888,7 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
           <div className="confirm-modal">
             <h3>Delete Printer?</h3>
-            <p>
-              Are you sure you want to permanently delete <strong style={{ color: T.text }}>{confirmDelete.name}</strong>?
-              <br /><br />
-              If this printer is linked to existing jobs, the deletion will fail. Consider disabling it instead.
-            </p>
+            <p>Are you sure you want to permanently delete <strong style={{ color: T.text }}>{confirmDelete.name}</strong>? If linked to existing jobs, the deletion will fail. Consider disabling it instead.</p>
             <div style={{ display: "flex", gap: 10 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setConfirmDelete(null)}>Cancel</button>
               <button className="btn btn-danger" style={{ flex: 1, background: "rgba(255,92,92,0.15)" }} onClick={executeDelete}>Delete</button>
@@ -944,9 +901,7 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowForm(false)}>
           <div className="modal">
             <h3 style={{ marginBottom: 4 }}>{editPrinter ? `Edit: ${editPrinter.name}` : "Add New Printer"}</h3>
-            <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 20 }}>
-              {editPrinter ? "Update printer specs and rate configuration." : "Configure a new printer and its billing rates."}
-            </p>
+            <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 20 }}>Configure printer identity and calculator rates.</p>
 
             <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10 }}>Identity</div>
             <div className="input-row">
@@ -969,8 +924,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
                 <input type="text" placeholder="e.g. 256×256×256mm" value={form.build_volume} onChange={(e) => setForm(f => ({ ...f, build_volume: e.target.value }))} />
               </div>
             </div>
-
-            <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Specs</div>
             <div className="input-row">
               <div className="input-group">
                 <label>Wattage *</label>
@@ -978,7 +931,6 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
                   <input type="number" min={1} step={10} placeholder="200" value={form.wattage} onChange={(e) => setForm(f => ({ ...f, wattage: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
                   <span className="input-suffix">W</span>
                 </div>
-                {form.wattage && <div style={{ fontSize: 11, color: T.textDim, marginTop: 3 }}>{(Number(form.wattage) / 1000).toFixed(3)} kW · ≈₱{((Number(form.wattage) / 1000) * 12).toFixed(2)}/hr elec</div>}
               </div>
               <div className="input-group" style={{ display: "flex", flexDirection: "column", justifyContent: "flex-start" }}>
                 <label>Features</label>
@@ -995,54 +947,49 @@ function PrinterInventoryView({ printerRows, reloadAllPrinters, setPrinterRows, 
               </div>
             </div>
 
-            <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Billing Rates</div>
+            <div style={{ fontSize: 11, fontWeight: 600, color: T.textDim, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 10, marginTop: 6 }}>Calculator Rates</div>
             <div style={{ padding: "10px 14px", background: "rgba(91,156,246,0.07)", border: "1px solid rgba(91,156,246,0.18)", borderRadius: 8, fontSize: 11, color: T.info, marginBottom: 14, lineHeight: 1.6 }}>
-              <strong>How rates work:</strong> Final printer charge = <span style={{ fontFamily: T.fontMono }}>base_rate × hours × labor × multiplier</span>. Electricity is computed separately from wattage. Multicolor adds 8% electricity surcharge.
+              <strong>Formula:</strong> <span style={{ fontFamily: T.fontMono }}>base_cost = (cost_per_gram × grams) + (cost_per_hour × hours)</span><br/>
+              <span style={{ fontFamily: T.fontMono }}>risk_adjusted = base_cost × (1 + failure_rate)</span>
             </div>
-
             <div className="input-row">
               <div className="input-group">
-                <label>Base Rate (₱/hr) <span style={{ color: T.info, fontSize: 10 }}>— machine depreciation/hour</span></label>
+                <label>Cost per gram (₱/g) <span style={{ color: T.info, fontSize: 10 }}>— material charge</span></label>
                 <div className="input-addon">
                   <span className="input-prefix">₱</span>
-                  <input type="number" min={0} step={0.5} placeholder="5.00" value={form.base_rate} onChange={(e) => setForm(f => ({ ...f, base_rate: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                  <input type="number" min={0} step={0.01} placeholder="0.65" value={form.cost_per_gram} onChange={(e) => setForm(f => ({ ...f, cost_per_gram: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
                 </div>
               </div>
               <div className="input-group">
-                <label>Efficiency × <span style={{ color: T.info, fontSize: 10 }}>— electricity markup</span></label>
+                <label>Cost per hour (₱/hr) <span style={{ color: T.info, fontSize: 10 }}>— machine time</span></label>
                 <div className="input-addon">
-                  <span className="input-prefix">×</span>
-                  <input type="number" min={0.1} step={0.05} placeholder="1.20" value={form.efficiency} onChange={(e) => setForm(f => ({ ...f, efficiency: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                  <span className="input-prefix">₱</span>
+                  <input type="number" min={0} step={0.5} placeholder="8.00" value={form.cost_per_hour} onChange={(e) => setForm(f => ({ ...f, cost_per_hour: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
                 </div>
               </div>
             </div>
             <div className="input-row">
               <div className="input-group">
-                <label>Labor Multiplier × <span style={{ color: T.warn, fontSize: 10 }}>— applied on base rate</span></label>
+                <label>Failure Rate <span style={{ color: T.warn, fontSize: 10 }}>— 0.05 = 5% risk buffer</span></label>
                 <div className="input-addon">
-                  <span className="input-prefix">×</span>
-                  <input type="number" min={0.1} step={0.05} placeholder="1.00" value={form.labor} onChange={(e) => setForm(f => ({ ...f, labor: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                  <input type="number" min={0} max={1} step={0.01} placeholder="0.05" value={form.failure_rate} onChange={(e) => setForm(f => ({ ...f, failure_rate: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <span className="input-suffix">{form.failure_rate !== "" ? `${(Number(form.failure_rate) * 100).toFixed(0)}%` : "—"}</span>
                 </div>
+                {Number(form.failure_rate) > 0.15 && (
+                  <div style={{ fontSize: 11, color: T.danger, marginTop: 4 }}>⚠ High failure rate — will trigger a warning in the cost engine.</div>
+                )}
               </div>
               <div className="input-group">
-                <label>Markup Multiplier × <span style={{ color: T.accent, fontSize: 10 }}>— profit multiplier</span></label>
-                <div className="input-addon">
-                  <span className="input-prefix">×</span>
-                  <input type="number" min={0.1} step={0.05} placeholder="1.50" value={form.multiplier} onChange={(e) => setForm(f => ({ ...f, multiplier: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
+                <label style={{ marginBottom: 6 }}>Rate preview (per job at 50g/3h)</label>
+                <div style={{ padding: "9px 12px", background: T.bgInput, border: `1px solid ${T.border}`, borderRadius: 8, fontSize: 12, fontFamily: T.fontMono, color: T.textMuted }}>
+                  {form.cost_per_gram && form.cost_per_hour ? (() => {
+                    const base = (Number(form.cost_per_gram) * 50) + (Number(form.cost_per_hour) * 3);
+                    const risk = base * (1 + Number(form.failure_rate || 0));
+                    return <><span style={{ color: T.textDim }}>base: </span><span style={{ color: T.text }}>₱{base.toFixed(2)}</span><span style={{ color: T.textDim }}> → risk-adj: </span><span style={{ color: T.accent }}>₱{risk.toFixed(2)}</span></>;
+                  })() : "—"}
                 </div>
               </div>
             </div>
-
-            {form.base_rate && form.labor && form.multiplier && (
-              <div style={{ padding: "10px 14px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 9, fontSize: 12, marginBottom: 12 }}>
-                <div style={{ color: T.textMuted, marginBottom: 4 }}>Rate preview (per hour):</div>
-                <div style={{ display: "flex", gap: 16, fontFamily: T.fontMono, flexWrap: "wrap" }}>
-                  <span style={{ color: T.textDim }}>Machine: <span style={{ color: T.text }}>₱{Number(form.base_rate || 0).toFixed(2)}</span></span>
-                  <span style={{ color: T.textDim }}>w/ Labor: <span style={{ color: T.warn }}>₱{(Number(form.base_rate || 0) * Number(form.labor || 1)).toFixed(2)}</span></span>
-                  <span style={{ color: T.textDim }}>w/ Markup: <span style={{ color: T.accent }}>₱{(Number(form.base_rate || 0) * Number(form.labor || 1) * Number(form.multiplier || 1)).toFixed(2)}</span></span>
-                </div>
-              </div>
-            )}
 
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>Error: {opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
@@ -1066,30 +1013,24 @@ function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selecte
         <div className="page-title">New Print Job</div>
         <div className="page-sub">Follow the steps to configure and price your job</div>
       </div>
-
       <div className="stepper">
         {STEPS.map((s, i) => (
           <div key={s.id} className="step-item">
-            <div className={`step-circle ${step > s.id ? "done" : step === s.id ? "active" : ""}`}>
-              {step > s.id ? "✓" : s.id}
-            </div>
+            <div className={`step-circle ${step > s.id ? "done" : step === s.id ? "active" : ""}`}>{step > s.id ? "✓" : s.id}</div>
             <span className={`step-label ${step === s.id ? "active" : ""}`}>{s.label}</span>
             {i < STEPS.length - 1 && <div className={`step-connector ${step > s.id ? "done" : ""}`} />}
           </div>
         ))}
       </div>
-
-      {step === 1 && <Step1 jobType={jobType} setJobType={setJobType} />}
+      {step === 1 && <Step1 jobType={jobType} setJobType={setJobType} pricingConfig={pricingConfig} />}
       {step === 2 && <Step2 selectedPrinters={selectedPrinters} togglePrinter={togglePrinter} setPrinterPct={setPrinterPct} printerDB={printerDB} printerRows={printerRows} />}
       {step === 3 && <Step3 filaments={filaments} filSearch={filSearch} setFilSearch={setFilSearch} selectedFil={selectedFil} setSelectedFil={setSelectedFil} />}
       {step === 4 && <Step4 grams={grams} setGrams={setGrams} hours={hours} setHours={setHours} selectedFil={selectedFil} />}
-      {step === 5 && <Step5 costResult={costResult} pricingConfig={pricingConfig} selectedFil={selectedFil} />}
+      {step === 5 && <Step5 costResult={costResult} pricingConfig={pricingConfig} selectedFil={selectedFil} jobType={jobType} />}
       {step === 6 && <Step6 costResult={costResult} customPrice={customPrice} setCustomPrice={setCustomPrice} />}
       {step === 7 && <Step7 clientName={clientName} setClientName={setClientName} deadline={deadline} setDeadline={setDeadline} notes={notes} setNotes={setNotes} parts={parts} setParts={setParts} />}
       {step === 8 && <Step8 jobType={jobType} selectedPrinters={selectedPrinters} printerDB={printerDB} selectedFil={selectedFil} grams={grams} hours={hours} costResult={costResult} customPrice={customPrice} clientName={clientName} deadline={deadline} notes={notes} parts={parts} />}
-
       {saveError && <div className="validation-gate" style={{ marginTop: 12 }}>Save error: {saveError}</div>}
-
       <div className="btn-row">
         <button className="btn btn-ghost" onClick={goBack} disabled={step === 1 || saving}>← Back</button>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -1102,14 +1043,30 @@ function POSView({ step, stepValid, goNext, goBack, jobType, setJobType, selecte
   );
 }
 
-function Step1({ jobType, setJobType }) {
+// ─── STEP 1: Job Type (now shows multiplier preview) ─────────────────────────
+function Step1({ jobType, setJobType, pricingConfig }) {
+  const multipliers = pricingConfig?.job_type_multipliers ?? DEFAULT_PRICING_CONFIG.job_type_multipliers;
+  const descriptions = {
+    "Standard Print": "Baseline rate",
+    "Prototype":      "Higher — iteration cost",
+    "Production Run": "Lower — volume efficiency",
+    "Multicolor":     "Higher — waste + complexity",
+    "Functional Part":"Higher — precision + liability",
+    "Display Model":  "Higher — aesthetic premium",
+  };
   return (
     <div className="card">
       <div className="card-title"><span className="card-title-dot" />Job Type</div>
-      <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 16 }}>What kind of print job is this?</p>
+      <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 16 }}>Job type sets the price multiplier applied to the base cost.</p>
       <div className="grid3">
         {JOB_TYPES.map((t) => (
-          <div key={t} className={`chip ${jobType === t ? "selected" : ""}`} onClick={() => setJobType(t)}>{t}</div>
+          <div key={t} className={`chip ${jobType === t ? "selected" : ""}`} onClick={() => setJobType(t)} style={{ textAlign: "left", padding: "12px 14px" }}>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>{t}</div>
+            <div style={{ fontSize: 11, color: jobType === t ? T.accentDim : T.textDim }}>{descriptions[t]}</div>
+            <div style={{ fontSize: 12, fontFamily: T.fontMono, color: jobType === t ? T.accent : T.textMuted, marginTop: 4 }}>
+              ×{Number(multipliers[t] ?? 1).toFixed(2)}
+            </div>
+          </div>
         ))}
       </div>
     </div>
@@ -1122,10 +1079,7 @@ function Step2({ selectedPrinters, togglePrinter, setPrinterPct, printerDB, prin
     <div className="card">
       <div className="card-title"><span className="card-title-dot" />Printer Assignment</div>
       {printerRows.length === 0 ? (
-        <div className="empty-state">
-          No active printers found.
-          <br /><span style={{ fontSize: 12, color: T.textDim, marginTop: 6, display: "block" }}>Add printers via the Printers tab.</span>
-        </div>
+        <div className="empty-state">No active printers found.<br /><span style={{ fontSize: 12, color: T.textDim, marginTop: 6, display: "block" }}>Add printers via the Printers tab.</span></div>
       ) : (
         <div className="grid2" style={{ marginBottom: 20 }}>
           {printerRows.map((p) => (
@@ -1139,7 +1093,7 @@ function Step2({ selectedPrinters, togglePrinter, setPrinterPct, printerDB, prin
               </div>
               <div className="printer-meta">{p.brand}{p.model ? ` ${p.model}` : ""}{p.build_volume ? ` · ${p.build_volume}` : ""}</div>
               <div style={{ fontSize: 10, color: T.textDim, marginTop: 4, fontFamily: T.fontMono }}>
-                ₱{Number(p.base_rate).toFixed(2)}/hr · ×{Number(p.multiplier).toFixed(1)} markup
+                ₱{Number(p.cost_per_gram ?? 0).toFixed(4)}/g · ₱{Number(p.cost_per_hour ?? 0).toFixed(2)}/hr · {(Number(p.failure_rate ?? 0) * 100).toFixed(0)}% fail
               </div>
             </div>
           ))}
@@ -1149,8 +1103,7 @@ function Step2({ selectedPrinters, togglePrinter, setPrinterPct, printerDB, prin
         <>
           <div className="card-title" style={{ marginTop: 8 }}><span className="card-title-dot" />Allocation</div>
           {selectedPrinters.map((sp) => {
-            const p = printerDB[sp.id];
-            if (!p) return null;
+            const p = printerDB[sp.id]; if (!p) return null;
             return (
               <div key={sp.id} className="alloc-row">
                 <span className="alloc-name">{p.name}</span>
@@ -1177,10 +1130,7 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
         <input type="text" placeholder="Search by brand, type, color…" value={filSearch} onChange={(e) => setFilSearch(e.target.value)} />
       </div>
       {filaments.length === 0 ? (
-        <div className="empty-state">
-          No active filaments found in database.
-          <br /><span style={{ fontSize: 12, color: T.textDim, marginTop: 6, display: "block" }}>Add filaments via the Filaments tab.</span>
-        </div>
+        <div className="empty-state">No active filaments found in database.</div>
       ) : (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
           {filaments.map((f) => (
@@ -1190,13 +1140,7 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
                 <span className="fil-name">{f.color}</span>
                 <span className="badge badge-info">{f.type}</span>
               </div>
-              <div className="fil-meta">
-                {f.brand} · {f.finish}
-                {f.true_cost_per_kg != null
-                  ? <> · <span style={{ color: T.info }}>true: ₱{(f.true_cost_per_kg / 1000).toFixed(4)}/g</span></>
-                  : <> · <span style={{ color: T.textDim }}>₱{(f.price_per_kg / 1000).toFixed(4)}/g</span></>}
-                {f.selling_price_per_kg != null && <> · <span style={{ color: T.accent }}>sell: ₱{(f.selling_price_per_kg / 1000).toFixed(4)}/g</span></>}
-              </div>
+              <div className="fil-meta">{f.brand} · {f.finish}</div>
             </div>
           ))}
         </div>
@@ -1206,7 +1150,6 @@ function Step3({ filaments, filSearch, setFilSearch, selectedFil, setSelectedFil
 }
 
 function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
-  const exactFilamentCost = selectedFil ? (grams / 1000) * Number(selectedFil.price_per_kg || 0) : 0;
   const wholeHrs = Math.floor(hours);
   const mins = Math.round((hours - wholeHrs) * 60);
   const handleHrsChange = (v) => { const h = Math.max(0, Number(v) || 0); setHours(+(h + mins / 60).toFixed(4)); };
@@ -1228,10 +1171,7 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
           <input type="number" min={1} step={1} value={grams} onChange={(e) => setGrams(Math.max(1, Number(e.target.value) || 1))} style={{ borderRadius: "8px 0 0 8px" }} />
           <span className="input-suffix">g</span>
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.textDim, marginTop: 6 }}>
-          <span>{(grams / 1000).toFixed(3)} kg</span>
-          <span style={{ color: T.textMuted }}>{exactFilamentCost.toFixed(2)} ₱ raw material cost</span>
-        </div>
+        <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>{(grams / 1000).toFixed(3)} kg</div>
       </div>
       <div className="input-group" style={{ marginTop: 16 }}>
         <label>Print Duration</label>
@@ -1252,105 +1192,151 @@ function Step4({ grams, setGrams, hours, setHours, selectedFil }) {
           </div>
         </div>
         <div style={{ fontSize: 11, color: T.textDim, marginTop: 6 }}>
-          Total: <span style={{ color: T.accent, fontFamily: T.fontMono }}>{totalMin} min</span> &nbsp;·&nbsp; {hours.toFixed(2)} hrs
+          Total: <span style={{ color: T.accent, fontFamily: T.fontMono }}>{totalMin} min</span> · {hours.toFixed(2)} hrs
         </div>
       </div>
       <div className="grid2" style={{ marginTop: 20 }}>
-        <div className="stat-card"><div className="stat-label">Weight</div><div className="stat-val">{grams}g</div><div className="stat-sub">{(grams / 1000).toFixed(3)} kg</div></div>
-        <div className="stat-card"><div className="stat-label">Time</div><div className="stat-val">{wholeHrs}h {mins}m</div><div className="stat-sub">{totalMin} min total</div></div>
+        <div className="stat-card"><div className="stat-label">Weight</div><div className="stat-val">{grams}g</div></div>
+        <div className="stat-card"><div className="stat-label">Time</div><div className="stat-val">{wholeHrs}h {mins}m</div></div>
       </div>
     </div>
   );
 }
 
-function Step5({ costResult, pricingConfig, selectedFil }) {
+// ─── STEP 5: NEW COST ENGINE DISPLAY ─────────────────────────────────────────
+function Step5({ costResult, pricingConfig, selectedFil, jobType }) {
   if (!costResult) return <div className="card"><p style={{ color: T.textMuted, fontSize: 13 }}>Computing costs…</p></div>;
-  const items = [
-    { label: "Filament", ...costResult.filament },
-    { label: "Electricity", ...costResult.electricity },
-    { label: "Printer Usage", ...costResult.printer_usage },
-  ];
-  const maxCharged = Math.max(...items.map((i) => i.charged), 0.01);
-  const hasTrueCost = selectedFil?.true_cost_per_kg != null;
-  const hasSellingPrice = selectedFil?.selling_price_per_kg != null;
+
+  const maxRisk = Math.max(...costResult.per_printer.map(p => p.riskAdjustedCost), 0.01);
+
   return (
     <div>
-      <div className="card">
-        <div className="card-title"><span className="card-title-dot" />Cost Breakdown</div>
-        {selectedFil && (
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, padding: "10px 14px", background: T.bgInput, borderRadius: 8 }}>
-            <span className="filament-color-dot" style={{ background: getFilColor(selectedFil.color), border: "1px solid rgba(255,255,255,0.1)", alignSelf: "center" }} />
-            <span style={{ fontSize: 12, color: T.text }}>{selectedFil.brand} {selectedFil.type} — {selectedFil.color}</span>
-            {hasTrueCost && <span style={{ fontSize: 11, color: T.info, fontFamily: T.fontMono }}>true: ₱{selectedFil.true_cost_per_kg}/kg</span>}
-            {hasSellingPrice && <span style={{ fontSize: 11, color: T.accent, fontFamily: T.fontMono }}>selling: ₱{selectedFil.selling_price_per_kg}/kg</span>}
-            {!hasTrueCost && <span style={{ fontSize: 11, color: T.textDim }}>ref: ₱{selectedFil.price_per_kg}/kg</span>}
-          </div>
-        )}
-        <div className="dual-bar-legend" style={{ marginBottom: 16 }}>
-          <div className="dual-bar-legend-item"><div className="dual-bar-legend-dot" style={{ background: T.textDim, opacity: 0.5 }} />Real cost</div>
-          <div className="dual-bar-legend-item"><div className="dual-bar-legend-dot" style={{ background: T.accent, opacity: 0.75 }} />Charged to client</div>
-        </div>
-        {items.map((item) => (
-          <div key={item.label} className="cmp-row">
-            <div className="cmp-header">
-              <span className="cmp-label">{item.label}</span>
-              <div className="cmp-vals">
-                <span className="cmp-real">₱{item.real.toFixed(2)}</span>
-                <span style={{ color: T.textDim }}>→</span>
-                <span className="cmp-charged">₱{item.charged.toFixed(2)}</span>
-                <span className="cmp-profit">+₱{item.profit.toFixed(2)}</span>
-              </div>
-            </div>
-            <div className="dual-bar">
-              <div className="dual-bar-charged" style={{ width: `${(item.charged / maxCharged) * 100}%` }} />
-              <div className="dual-bar-real" style={{ width: `${(item.real / maxCharged) * 100}%` }} />
-            </div>
-          </div>
-        ))}
-        <div style={{ marginTop: 16, padding: "12px 14px", background: T.bgInput, borderRadius: 9, border: `1px solid ${T.border}` }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-            <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Total</span>
-            <div style={{ display: "flex", gap: 14, fontFamily: T.fontMono, fontSize: 13 }}>
-              <span style={{ color: T.textDim }}>₱{costResult.totals.real.toFixed(2)}</span>
-              <span style={{ color: T.textDim }}>→</span>
-              <span style={{ color: T.text, fontWeight: 600 }}>₱{costResult.totals.charged.toFixed(2)}</span>
-              <span style={{ color: T.accent, fontWeight: 600 }}>+₱{costResult.totals.profit.toFixed(2)}</span>
-            </div>
-          </div>
-          <div className="dual-bar" style={{ height: 10 }}>
-            <div className="dual-bar-charged" style={{ width: "100%" }} />
-            <div className="dual-bar-real" style={{ width: `${costResult.totals.charged > 0 ? (costResult.totals.real / costResult.totals.charged) * 100 : 0}%` }} />
-          </div>
-          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: T.textDim, marginTop: 4 }}>
-            <span>{costResult.totals.margin.toFixed(1)}% margin</span>
-            <span>Profit multiplier ×{costResult.totals.real > 0 ? (costResult.totals.charged / costResult.totals.real).toFixed(2) : "—"}</span>
-          </div>
-        </div>
-      </div>
-      {costResult.per_printer && costResult.per_printer.length > 1 && (
-        <div className="card">
-          <div className="card-title"><span className="card-title-dot" />Per-Printer Breakdown</div>
-          {costResult.per_printer.map((pp) => (
-            <div key={pp.id} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                <span style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{pp.name}</span>
-                <span style={{ fontSize: 12, color: T.textMuted, fontFamily: T.fontMono }}>{pp.pct}% · {pp.hours}h · {pp.grams}g</span>
-              </div>
-              <div style={{ display: "flex", gap: 16, fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>
-                <span>Elec: <span style={{ color: T.text }}>₱{pp.elec.charged.toFixed(2)}</span></span>
-                <span>Printer: <span style={{ color: T.text }}>₱{pp.printer.charged.toFixed(2)}</span></span>
-              </div>
-            </div>
+      {/* Warnings */}
+      {costResult.warnings.length > 0 && (
+        <div>
+          {costResult.warnings.map((w, i) => (
+            <div key={i} className="warn-gate">⚠ {w}</div>
           ))}
         </div>
       )}
-      {costResult.formula_error && <div className="validation-gate" style={{ marginBottom: 16 }}>Pricing formula warning: {costResult.formula_error}</div>}
+
+      {/* Per-printer breakdown */}
       <div className="card">
-        <div className="card-title"><span className="card-title-dot" />Recommendation</div>
-        <div className="grid3">
-          <div className="rec-card"><div className="rec-title">Lowest Cost</div><div className="rec-val">{costResult.recommendation.lowest_cost}</div></div>
-          <div className="rec-card"><div className="rec-title">Fastest</div><div className="rec-val">{costResult.recommendation.fastest}</div></div>
-          <div className="rec-card"><div className="rec-title">Highest Profit</div><div className="rec-val">{costResult.recommendation.highest_profit}</div></div>
+        <div className="card-title"><span className="card-title-dot" />Per-Printer Cost Breakdown</div>
+        <div style={{ fontSize: 11, color: T.textDim, marginBottom: 14 }}>
+          For each printer: <span style={{ fontFamily: T.fontMono, color: T.textMuted }}>base_cost = (₱/g × grams) + (₱/hr × hours)</span> · then risk-adjusted by failure rate
+        </div>
+        {costResult.per_printer.map((pp) => (
+          <div key={pp.id} className={`printer-breakdown-card ${pp.isExpensive ? "expensive" : ""}`}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: T.text }}>{pp.name}</span>
+                {pp.isExpensive && costResult.per_printer.length > 1 && (
+                  <span className="badge badge-warn">Most Expensive</span>
+                )}
+                {pp.failureRate > 0.15 && <span className="badge badge-danger">High Risk</span>}
+              </div>
+              <span style={{ fontSize: 12, color: T.textMuted, fontFamily: T.fontMono }}>{pp.pct}% · {pp.hours}h · {pp.grams}g</span>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <div>
+                <div style={{ fontSize: 10, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 3 }}>Cost/gram</div>
+                <div style={{ fontFamily: T.fontMono, fontSize: 13, color: T.info }}>₱{pp.costPerGram.toFixed(4)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 3 }}>Cost/hour</div>
+                <div style={{ fontFamily: T.fontMono, fontSize: 13, color: T.info }}>₱{pp.costPerHour.toFixed(2)}</div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 3 }}>Failure Rate</div>
+                <div style={{ fontFamily: T.fontMono, fontSize: 13, color: pp.failureRate > 0.15 ? T.danger : pp.failureRate > 0.08 ? T.warn : T.textMuted }}>
+                  {(pp.failureRate * 100).toFixed(1)}%
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 3 }}>Base Cost</div>
+                <div style={{ fontFamily: T.fontMono, fontSize: 13, color: T.textMuted }}>₱{pp.baseCost.toFixed(2)}</div>
+              </div>
+            </div>
+
+            {/* Bar: base → risk-adjusted */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ height: 6, background: T.border, borderRadius: 3, overflow: "hidden", marginBottom: 3 }}>
+                  <div style={{ height: "100%", borderRadius: 3, background: T.textDim, width: `${(pp.baseCost / maxRisk) * 100}%`, opacity: 0.5, position: "relative" }}>
+                    <div style={{ position: "absolute", left: 0, top: 0, height: "100%", borderRadius: 3, background: pp.isExpensive ? T.warn : T.accent, width: `${(pp.riskAdjustedCost / pp.baseCost) * 100}%`, opacity: 0.85 }} />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 12, fontSize: 10, color: T.textDim }}>
+                  <span>base ₱{pp.baseCost.toFixed(2)}</span>
+                  <span style={{ color: pp.isExpensive ? T.warn : T.accent }}>→ risk-adj ₱{pp.riskAdjustedCost.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Formula trace */}
+      <div className="card">
+        <div className="card-title"><span className="card-title-dot" />Pricing Formula Trace</div>
+        <div className="engine-formula-box">
+          <div className="formula-row">
+            <span className="formula-label">Total base cost (sum of risk-adjusted)</span>
+            <span className="formula-val">₱{costResult.totalBaseCost.toFixed(2)}</span>
+          </div>
+          <div className="formula-row">
+            <span className="formula-label">Labor rate</span>
+            <span className="formula-val info">+{(costResult.laborRate * 100).toFixed(0)}%</span>
+          </div>
+          <div className="formula-row">
+            <span className="formula-label">Printer fee rate</span>
+            <span className="formula-val info">+{(costResult.printerFeeRate * 100).toFixed(0)}%</span>
+          </div>
+          <div className="formula-row">
+            <span className="formula-label">Markup rate</span>
+            <span className="formula-val info">+{(costResult.markupRate * 100).toFixed(0)}%</span>
+          </div>
+          <div className="formula-row">
+            <span className="formula-label">Overhead multiplier</span>
+            <span className="formula-val">×{(1 + costResult.laborRate + costResult.printerFeeRate + costResult.markupRate).toFixed(2)}</span>
+          </div>
+          <div className="formula-row">
+            <span className="formula-label">Price before job type</span>
+            <span className="formula-val">₱{costResult.priceBeforeJobType.toFixed(2)}</span>
+          </div>
+          <div className="formula-row">
+            <span className="formula-label">Job type ({jobType})</span>
+            <span className="formula-val warn">×{costResult.jobTypeMultiplier.toFixed(2)}</span>
+          </div>
+          <div className="formula-row" style={{ paddingTop: 8, marginTop: 4, borderTop: `1px solid rgba(0,229,160,0.2)` }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>Final Price</span>
+            <span style={{ fontFamily: T.fontMono, fontSize: 15, fontWeight: 600, color: T.accent }}>
+              ₱{costResult.totals.charged.toFixed(2)}
+              {costResult.isMinimumEnforced && <span style={{ fontSize: 10, color: T.warn, marginLeft: 8 }}>(min charge enforced)</span>}
+            </span>
+          </div>
+        </div>
+
+        <div className="grid3" style={{ marginTop: 4 }}>
+          <div className="stat-card">
+            <div className="stat-label">Base Cost</div>
+            <div className="stat-val" style={{ fontSize: 16 }}>₱{costResult.totalBaseCost.toFixed(2)}</div>
+            <div className="stat-sub">sum of risk-adjusted</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Final Price</div>
+            <div className="stat-val stat-profit" style={{ fontSize: 16 }}>₱{costResult.totals.charged.toFixed(2)}</div>
+            <div className="stat-sub">{costResult.totals.margin.toFixed(1)}% margin</div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-label">Profit</div>
+            <div className="stat-val" style={{ fontSize: 16, color: costResult.totals.profit >= 0 ? T.accent : T.danger }}>
+              ₱{costResult.totals.profit.toFixed(2)}
+            </div>
+            <div className="stat-sub">after all costs</div>
+          </div>
         </div>
       </div>
     </div>
@@ -1366,16 +1352,8 @@ function Step6({ costResult, customPrice, setCustomPrice }) {
     <div className="card">
       <div className="card-title"><span className="card-title-dot" />Pricing Review</div>
       <div className="grid2" style={{ marginBottom: 20 }}>
-        <div className="stat-card">
-          <div className="stat-label">Suggested Price</div>
-          <div className="stat-val">₱{costResult.totals.charged.toFixed(2)}</div>
-          <div className="stat-sub">System recommendation</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Your Price</div>
-          <div className="stat-val stat-profit">₱{finalPrice.toFixed(2)}</div>
-          <div className="stat-sub">Editable below</div>
-        </div>
+        <div className="stat-card"><div className="stat-label">Suggested Price</div><div className="stat-val">₱{costResult.totals.charged.toFixed(2)}</div><div className="stat-sub">System recommendation</div></div>
+        <div className="stat-card"><div className="stat-label">Your Price</div><div className="stat-val stat-profit">₱{finalPrice.toFixed(2)}</div><div className="stat-sub">Editable below</div></div>
       </div>
       <div className="input-group">
         <label>Final Price (₱)</label>
@@ -1419,7 +1397,7 @@ function Step7({ clientName, setClientName, deadline, setDeadline, notes, setNot
       </div>
       <div className="input-group">
         <label>Notes</label>
-        <textarea rows={3} placeholder="Special instructions, color requirements…" value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: "none" }} />
+        <textarea rows={3} placeholder="Special instructions…" value={notes} onChange={(e) => setNotes(e.target.value)} style={{ resize: "none" }} />
       </div>
     </div>
   );
@@ -1428,11 +1406,12 @@ function Step7({ clientName, setClientName, deadline, setDeadline, notes, setNot
 function Step8({ jobType, selectedPrinters, printerDB, selectedFil, grams, hours, costResult, customPrice, clientName, deadline, notes, parts }) {
   const finalPrice = customPrice ?? costResult?.totals.charged;
   const checks = [
-    { label: "Job Type", val: jobType },
+    { label: "Job Type", val: `${jobType} (×${costResult?.jobTypeMultiplier?.toFixed(2) ?? "—"})` },
     { label: "Printers", val: selectedPrinters.map((p) => `${printerDB[p.id]?.name ?? p.id} (${p.pct}%)`).join(", ") },
     { label: "Filament", val: selectedFil ? `${selectedFil.brand} ${selectedFil.type} — ${selectedFil.color}` : "—" },
     { label: "Parameters", val: `${grams}g · ${hours.toFixed(2)}h` },
-    { label: "Total Cost", val: finalPrice ? `₱${finalPrice.toFixed(2)}` : "—" },
+    { label: "Base Cost", val: costResult ? `₱${costResult.totalBaseCost.toFixed(2)}` : "—" },
+    { label: "Final Price", val: finalPrice ? `₱${finalPrice.toFixed(2)}` : "—" },
     { label: "Client", val: clientName },
     { label: "Deadline", val: deadline || "None" },
     { label: "Parts", val: parts || "Not specified" },
@@ -1545,16 +1524,11 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         });
         if (error) throw new Error(error.message);
       }
-      await reloadFilaments();
-      setEditFil(null); setShowAddFil(false);
-    } catch (err) {
-      setOpError(err.message);
-    } finally {
-      setOpLoading(false);
-    }
+      await reloadFilaments(); setEditFil(null); setShowAddFil(false);
+    } catch (err) { setOpError(err.message); }
+    finally { setOpLoading(false); }
   };
 
-  const confirmAndDelete = (f) => { setConfirmDelete(f); setOpError(""); };
   const executeDelete = async () => {
     if (!confirmDelete) return;
     setDeleteLoading(true);
@@ -1562,16 +1536,10 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
     setConfirmDelete(null);
     try {
       const { error } = await supabase.from("filaments").delete().eq("id", id);
-      if (error) {
-        setOpError(`Cannot delete "${confirmDelete.brand} ${confirmDelete.color}": ${error.message}.`);
-      } else {
-        setFilaments((prev) => prev.filter((f) => f.id !== id));
-      }
-    } catch (err) {
-      setOpError(err.message || "Failed to delete filament.");
-    } finally {
-      setDeleteLoading(false);
-    }
+      if (error) setOpError(`Cannot delete "${confirmDelete.brand} ${confirmDelete.color}": ${error.message}.`);
+      else setFilaments((prev) => prev.filter((f) => f.id !== id));
+    } catch (err) { setOpError(err.message || "Failed to delete filament."); }
+    finally { setDeleteLoading(false); }
   };
 
   return (
@@ -1583,54 +1551,25 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
         </div>
         <button className="btn btn-primary" onClick={openAdd}>+ Add Filament</button>
       </div>
-
-      {opError && (
-        <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>
-          {opError}
-        </div>
-      )}
-
+      {opError && <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>}
       <div className="card">
-        {filaments.length === 0 ? (
-          <div className="empty-state">No filaments in database yet.</div>
-        ) : (
+        {filaments.length === 0 ? <div className="empty-state">No filaments in database yet.</div> : (
           <table className="table">
-            <thead>
-              <tr>
-                <th>Filament</th><th>Type</th><th>Finish</th>
-                <th>₱/kg (ref)</th><th>True cost/g</th><th>Selling/g</th><th>Actions</th>
-              </tr>
-            </thead>
+            <thead><tr><th>Filament</th><th>Type</th><th>Finish</th><th>₱/kg (ref)</th><th>True cost/g</th><th>Selling/g</th><th>Actions</th></tr></thead>
             <tbody>
               {filaments.map((f) => (
                 <tr key={f.id}>
-                  <td>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.15)" }} />
-                      <div>
-                        <div style={{ color: T.text, fontWeight: 500 }}>{f.color}</div>
-                        <div style={{ fontSize: 11, color: T.textDim }}>{f.brand}</div>
-                      </div>
-                    </div>
-                  </td>
+                  <td><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.15)" }} /><div><div style={{ color: T.text, fontWeight: 500 }}>{f.color}</div><div style={{ fontSize: 11, color: T.textDim }}>{f.brand}</div></div></div></td>
                   <td><span className="badge badge-info">{f.type}</span></td>
                   <td><span className="tag">{f.finish}</span></td>
                   <td style={{ fontFamily: T.fontMono }}>₱{f.price_per_kg}</td>
-                  <td style={{ fontFamily: T.fontMono, color: T.info }}>
-                    {f.true_cost_per_kg != null
-                      ? <>₱{(f.true_cost_per_kg / 1000).toFixed(4)}<br /><span style={{ fontSize: 10, color: T.textDim }}>₱{f.true_cost_per_kg}/kg</span></>
-                      : <span style={{ color: T.textDim }}>₱{(f.price_per_kg / 1000).toFixed(4)}<br /><span style={{ fontSize: 10 }}>(from ref)</span></span>}
-                  </td>
-                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>
-                    {f.selling_price_per_kg != null
-                      ? <>₱{(f.selling_price_per_kg / 1000).toFixed(4)}<br /><span style={{ fontSize: 10, color: T.textDim }}>₱{f.selling_price_per_kg}/kg</span></>
-                      : <span style={{ color: T.textDim, fontSize: 11 }}>auto ×multiplier</span>}
-                  </td>
+                  <td style={{ fontFamily: T.fontMono, color: T.info }}>{f.true_cost_per_kg != null ? `₱${(f.true_cost_per_kg / 1000).toFixed(4)}` : <span style={{ color: T.textDim }}>—</span>}</td>
+                  <td style={{ fontFamily: T.fontMono, color: T.accent }}>{f.selling_price_per_kg != null ? `₱${(f.selling_price_per_kg / 1000).toFixed(4)}` : <span style={{ color: T.textDim, fontSize: 11 }}>—</span>}</td>
                   <td>
                     <div style={{ display: "flex", gap: 6 }}>
                       <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(f)}>Edit</button>
                       <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openDupe(f)}>Dupe</button>
-                      <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => confirmAndDelete(f)} disabled={deleteLoading}>✕ Delete</button>
+                      <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => setConfirmDelete(f)} disabled={deleteLoading}>✕</button>
                     </div>
                   </td>
                 </tr>
@@ -1639,7 +1578,6 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
           </table>
         )}
       </div>
-
       {confirmDelete && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setConfirmDelete(null)}>
           <div className="confirm-modal">
@@ -1652,63 +1590,23 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
           </div>
         </div>
       )}
-
       {showAddFil && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowAddFil(false)}>
           <div className="modal" style={{ width: 500 }}>
             <h3>{editFil ? "Edit Filament" : "Add Filament"}</h3>
             <div className="input-row">
-              <div className="input-group">
-                <label>Brand</label>
-                <input type="text" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} placeholder="e.g. Bambu Lab" />
-              </div>
-              <div className="input-group">
-                <label>Color Name</label>
-                <input type="text" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} placeholder="e.g. Jade White" />
-              </div>
+              <div className="input-group"><label>Brand</label><input type="text" value={form.brand} onChange={(e) => setForm((f) => ({ ...f, brand: e.target.value }))} placeholder="e.g. Bambu Lab" /></div>
+              <div className="input-group"><label>Color Name</label><input type="text" value={form.color} onChange={(e) => setForm((f) => ({ ...f, color: e.target.value }))} placeholder="e.g. Jade White" /></div>
             </div>
             <div className="input-row">
-              <div className="input-group">
-                <label>Type</label>
-                <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>
-                  {dbFilamentTypes.map((t) => <option key={t}>{t}</option>)}
-                  {form.type && !dbFilamentTypes.includes(form.type) && <option value={form.type}>{form.type}</option>}
-                </select>
-              </div>
-              <div className="input-group">
-                <label>Finish</label>
-                <select value={form.finish} onChange={(e) => setForm((f) => ({ ...f, finish: e.target.value }))}>
-                  {dbFinishTypes.map((t) => <option key={t}>{t}</option>)}
-                  {form.finish && !dbFinishTypes.includes(form.finish) && <option value={form.finish}>{form.finish}</option>}
-                </select>
-              </div>
+              <div className="input-group"><label>Type</label><select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))}>{dbFilamentTypes.map((t) => <option key={t}>{t}</option>)}</select></div>
+              <div className="input-group"><label>Finish</label><select value={form.finish} onChange={(e) => setForm((f) => ({ ...f, finish: e.target.value }))}>{dbFinishTypes.map((t) => <option key={t}>{t}</option>)}</select></div>
             </div>
-            <div className="input-group">
-              <label>Reference Price per kg (₱)</label>
-              <input type="number" value={form.price_per_kg} min={1} onChange={(e) => setForm((f) => ({ ...f, price_per_kg: +e.target.value }))} />
-            </div>
+            <div className="input-group"><label>Reference Price per kg (₱)</label><input type="number" value={form.price_per_kg} min={1} onChange={(e) => setForm((f) => ({ ...f, price_per_kg: +e.target.value }))} /></div>
             <div className="input-row">
-              <div className="input-group">
-                <label>True Cost per kg (₱) <span style={{ color: T.info, fontSize: 10 }}>— what you pay</span></label>
-                <div className="input-addon">
-                  <span className="input-prefix">₱</span>
-                  <input type="number" min={0} step={0.01} placeholder="e.g. 800" value={form.true_cost_per_kg} onChange={(e) => setForm((f) => ({ ...f, true_cost_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
-                </div>
-              </div>
-              <div className="input-group">
-                <label>Selling Price per kg (₱) <span style={{ color: T.accent, fontSize: 10 }}>— charged to client</span></label>
-                <div className="input-addon">
-                  <span className="input-prefix">₱</span>
-                  <input type="number" min={0} step={0.01} placeholder="e.g. 1400" value={form.selling_price_per_kg} onChange={(e) => setForm((f) => ({ ...f, selling_price_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} />
-                </div>
-              </div>
+              <div className="input-group"><label>True Cost per kg (₱)</label><div className="input-addon"><span className="input-prefix">₱</span><input type="number" min={0} step={0.01} placeholder="e.g. 800" value={form.true_cost_per_kg} onChange={(e) => setForm((f) => ({ ...f, true_cost_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} /></div></div>
+              <div className="input-group"><label>Selling Price per kg (₱)</label><div className="input-addon"><span className="input-prefix">₱</span><input type="number" min={0} step={0.01} placeholder="e.g. 1400" value={form.selling_price_per_kg} onChange={(e) => setForm((f) => ({ ...f, selling_price_per_kg: e.target.value }))} style={{ borderRadius: "0 8px 8px 0" }} /></div></div>
             </div>
-            {form.true_cost_per_kg !== "" && form.selling_price_per_kg !== "" && Number(form.true_cost_per_kg) > 0 && (
-              <div style={{ padding: "8px 12px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 8, fontSize: 12, marginBottom: 8 }}>
-                Margin: <strong style={{ color: T.accent }}>{(((Number(form.selling_price_per_kg) - Number(form.true_cost_per_kg)) / Number(form.selling_price_per_kg)) * 100).toFixed(1)}%</strong>
-                &nbsp;· Markup: <strong style={{ color: T.accent }}>×{(Number(form.selling_price_per_kg) / Number(form.true_cost_per_kg)).toFixed(2)}</strong>
-              </div>
-            )}
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>Error: {opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
               <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => setShowAddFil(false)} disabled={opLoading}>Cancel</button>
@@ -1725,22 +1623,19 @@ function InventoryView({ filaments, setFilaments, reloadFilaments }) {
 function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setPricingConfig, reloadFilaments, reloadPrinters }) {
   const [filEdits, setFilEdits] = useState({});
   const [printerEdits, setPrinterEdits] = useState({});
-  const [pricingDraft, setPricingDraft] = useState({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
-  const [saving, setSaving] = useState({ fil: false, printers: false, pricing: false });
-  const [msgs, setMsgs] = useState({ fil: "", printers: "", pricing: "" });
+  const [saving, setSaving] = useState({ fil: false, printers: false });
+  const [msgs, setMsgs] = useState({ fil: "", printers: "" });
 
   const setMsg = (key, v) => setMsgs((s) => ({ ...s, [key]: v }));
   const onFilChange = (id, v) => setFilEdits((s) => ({ ...s, [id]: v }));
   const onPrinterChange = (id, key, v) => setPrinterEdits((s) => ({ ...s, [id]: { ...(s[id] || {}), [key]: v } }));
-  const onPricingChange = (k, v) => setPricingDraft((s) => ({ ...s, [k]: v }));
 
   const saveFilaments = async () => {
     setSaving((s) => ({ ...s, fil: true })); setMsg("fil", "");
     try {
       for (const [idRaw, valRaw] of Object.entries(filEdits)) {
         if (valRaw === "" || valRaw == null) continue;
-        const num = Number(valRaw);
-        if (Number.isNaN(num)) continue;
+        const num = Number(valRaw); if (Number.isNaN(num)) continue;
         const f = filaments.find((x) => String(x.id) === String(idRaw));
         if (f && Number(f.price_per_kg) === num) continue;
         const { error } = await supabase.from("filaments").update({ price_per_kg: num }).eq("id", idRaw);
@@ -1755,13 +1650,11 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
     setSaving((s) => ({ ...s, printers: true })); setMsg("printers", "");
     try {
       for (const [idRaw, ed] of Object.entries(printerEdits)) {
-        const p = printerRows.find((r) => String(r.id) === String(idRaw));
-        if (!p) continue;
+        const p = printerRows.find((r) => String(r.id) === String(idRaw)); if (!p) continue;
         const payload = {};
-        if (ed.base !== undefined && ed.base !== "" && Number(ed.base) !== Number(p.base_rate)) payload.base_rate = Number(ed.base);
-        if (ed.eff !== undefined && ed.eff !== "" && Number(ed.eff) !== Number(p.efficiency)) payload.efficiency = Number(ed.eff);
-        if (ed.labor !== undefined && ed.labor !== "" && Number(ed.labor) !== Number(p.labor)) payload.labor = Number(ed.labor);
-        if (ed.mult !== undefined && ed.mult !== "" && Number(ed.mult) !== Number(p.multiplier)) payload.multiplier = Number(ed.mult);
+        if (ed.cost_per_gram !== undefined && ed.cost_per_gram !== "" && Number(ed.cost_per_gram) !== Number(p.cost_per_gram)) payload.cost_per_gram = Number(ed.cost_per_gram);
+        if (ed.cost_per_hour !== undefined && ed.cost_per_hour !== "" && Number(ed.cost_per_hour) !== Number(p.cost_per_hour)) payload.cost_per_hour = Number(ed.cost_per_hour);
+        if (ed.failure_rate !== undefined && ed.failure_rate !== "" && Number(ed.failure_rate) !== Number(p.failure_rate)) payload.failure_rate = Number(ed.failure_rate);
         if (Object.keys(payload).length === 0) continue;
         const { error } = await supabase.from("printers").update(payload).eq("id", idRaw);
         if (error) throw new Error(error.message);
@@ -1771,64 +1664,29 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
     finally { setSaving((s) => ({ ...s, printers: false })); }
   };
 
-  const savePricing = async () => {
-    setSaving((s) => ({ ...s, pricing: true })); setMsg("pricing", "");
-    try {
-      const payload = {};
-      if (pricingDraft.electricity_rate !== "") payload.electricity_rate = Number(pricingDraft.electricity_rate);
-      if (pricingDraft.markup_multiplier !== "") payload.markup_multiplier = Number(pricingDraft.markup_multiplier);
-      if (pricingDraft.minimum_price !== "") payload.minimum_price = Number(pricingDraft.minimum_price);
-      if (pricingDraft.formula !== "") payload.formula = pricingDraft.formula;
-      if (Object.keys(payload).length === 0) { setMsg("pricing", "No changes."); setSaving((s) => ({ ...s, pricing: false })); return; }
-      const { error } = await supabase.from("pricing_settings").update({ ...payload, updated_at: new Date().toISOString() }).eq("id", "default");
-      if (error) throw new Error(error.message);
-      const { data: psData, error: psErr } = await supabase.from("pricing_settings").select("*").eq("id", "default").single();
-      if (!psErr && psData) setPricingConfig({
-        electricity_rate: Number(psData.electricity_rate),
-        minimum_price: Number(psData.minimum_price),
-        markup_multiplier: Number(psData.markup_multiplier),
-        formula: psData.formula,
-      });
-      setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" });
-      setMsg("pricing", "Saved.");
-    } catch (err) { setMsg("pricing", err.message || "Failed"); }
-    finally { setSaving((s) => ({ ...s, pricing: false })); }
-  };
-
   const MsgBanner = ({ msg }) => {
     if (!msg) return null;
-    const isErr = msg.startsWith("Failed") || msg.startsWith("Cannot") || msg.toLowerCase().includes("error");
-    return (
-      <div style={{ marginTop: 12, padding: "9px 14px", background: isErr ? "rgba(255,92,92,0.08)" : T.accentGlow, border: `1px solid ${isErr ? "rgba(255,92,92,0.25)" : T.accentDim}`, borderRadius: 8, fontSize: 12, color: isErr ? T.danger : T.accent }}>
-        {msg}
-      </div>
-    );
+    const isErr = msg.startsWith("Failed") || msg.toLowerCase().includes("error");
+    return <div style={{ marginTop: 12, padding: "9px 14px", background: isErr ? "rgba(255,92,92,0.08)" : T.accentGlow, border: `1px solid ${isErr ? "rgba(255,92,92,0.25)" : T.accentDim}`, borderRadius: 8, fontSize: 12, color: isErr ? T.danger : T.accent }}>{msg}</div>;
   };
 
   return (
     <div>
       <div className="page-header">
         <div className="page-title">Parameters</div>
-        <div className="page-sub">Quick-edit filament prices, printer rates, and pricing settings.</div>
+        <div className="page-sub">Quick-edit filament prices and printer calculator rates.</div>
       </div>
 
       <div className="card">
         <div className="card-title"><span className="card-title-dot" />Filament Reference Prices</div>
         {filaments.length === 0 ? <div className="empty-state">No filaments found.</div> : filaments.map((f) => (
-          <div key={f.id} className="params-field-row">
-            <div className="params-field-info">
-              <div className="params-field-name">
+          <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 13, color: T.text, display: "flex", alignItems: "center", gap: 8 }}>
                 <span className="filament-color-dot" style={{ background: getFilColor(f.color), border: "1px solid rgba(255,255,255,0.1)" }} />
-                {f.color}
-                <span className="badge badge-info">{f.type}</span>
-                <span className="tag">{f.finish}</span>
+                {f.color}<span className="badge badge-info">{f.type}</span>
               </div>
-              <div className="params-field-sub">
-                {f.brand}
-                {" · "}<span style={{ color: T.textDim }}>ref: ₱{f.price_per_kg}/kg</span>
-                {f.true_cost_per_kg != null && <>{" · "}<span style={{ color: T.info }}>true: ₱{f.true_cost_per_kg}/kg</span></>}
-                {f.selling_price_per_kg != null && <>{" · "}<span style={{ color: T.accent }}>sell: ₱{f.selling_price_per_kg}/kg</span></>}
-              </div>
+              <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono, marginTop: 2 }}>{f.brand} · ref: ₱{f.price_per_kg}/kg</div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>₱/kg</label>
@@ -1844,27 +1702,27 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
       </div>
 
       <div className="card">
-        <div className="card-title"><span className="card-title-dot" />Printer Rates</div>
-        {printerRows.length === 0 ? <div className="empty-state">No active printers found. Add them via the Printers tab.</div> : (
+        <div className="card-title"><span className="card-title-dot" />Printer Calculator Rates</div>
+        <div className="section-hint">Edit per-printer rates used in the cost engine. Changes apply to all future jobs.</div>
+        {printerRows.length === 0 ? <div className="empty-state">No active printers found.</div> : (
           <div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 110px 110px", gap: 8, paddingBottom: 8, borderBottom: `1px solid ${T.border}`, marginBottom: 4 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 130px 130px 130px", gap: 8, paddingBottom: 8, borderBottom: `1px solid ${T.border}`, marginBottom: 4 }}>
               <div style={{ fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.6px" }}>Printer</div>
-              {["Base Rate", "Efficiency", "Labor", "Multiplier"].map((h) => (
+              {["Cost/gram (₱)", "Cost/hr (₱)", "Failure Rate"].map((h) => (
                 <div key={h} style={{ fontSize: 11, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.6px", textAlign: "center" }}>{h}</div>
               ))}
             </div>
             {printerRows.map((p) => {
               const ed = printerEdits[String(p.id)] || {};
               return (
-                <div key={p.id} className="params-field-row" style={{ display: "grid", gridTemplateColumns: "1fr 110px 110px 110px 110px", gap: 8, alignItems: "center" }}>
+                <div key={p.id} style={{ display: "grid", gridTemplateColumns: "1fr 130px 130px 130px", gap: 8, alignItems: "center", padding: "8px 0", borderBottom: `1px solid ${T.border}` }}>
                   <div>
                     <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{p.name}</div>
-                    <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{p.brand}{p.model ? ` ${p.model}` : ""} · {p.wattage}W</div>
+                    <div style={{ fontSize: 11, color: T.textDim, fontFamily: T.fontMono }}>{p.brand || ""} · {p.wattage}W</div>
                   </div>
-                  <input type="number" step="any" placeholder={String(p.base_rate ?? 0)} value={ed.base ?? ""} onChange={(e) => onPrinterChange(String(p.id), "base", e.target.value === "" ? "" : e.target.value)} />
-                  <input type="number" step="any" placeholder={String(p.efficiency ?? 0)} value={ed.eff ?? ""} onChange={(e) => onPrinterChange(String(p.id), "eff", e.target.value === "" ? "" : e.target.value)} />
-                  <input type="number" step="any" placeholder={String(p.labor ?? 0)} value={ed.labor ?? ""} onChange={(e) => onPrinterChange(String(p.id), "labor", e.target.value === "" ? "" : e.target.value)} />
-                  <input type="number" step="any" placeholder={String(p.multiplier ?? 0)} value={ed.mult ?? ""} onChange={(e) => onPrinterChange(String(p.id), "mult", e.target.value === "" ? "" : e.target.value)} />
+                  <input type="number" step="0.01" placeholder={String(p.cost_per_gram ?? 0)} value={ed.cost_per_gram ?? ""} onChange={(e) => onPrinterChange(String(p.id), "cost_per_gram", e.target.value === "" ? "" : e.target.value)} />
+                  <input type="number" step="0.5" placeholder={String(p.cost_per_hour ?? 0)} value={ed.cost_per_hour ?? ""} onChange={(e) => onPrinterChange(String(p.id), "cost_per_hour", e.target.value === "" ? "" : e.target.value)} />
+                  <input type="number" step="0.01" min={0} max={1} placeholder={String(p.failure_rate ?? 0)} value={ed.failure_rate ?? ""} onChange={(e) => onPrinterChange(String(p.id), "failure_rate", e.target.value === "" ? "" : e.target.value)} />
                 </div>
               );
             })}
@@ -1876,152 +1734,183 @@ function ParametersView({ filaments, printerRows, printerDB, pricingConfig, setP
         </div>
         <MsgBanner msg={msgs.printers} />
       </div>
-
-      <div className="card">
-        <div className="card-title"><span className="card-title-dot" />Pricing Settings</div>
-        {[
-          { label: "Electricity Rate", sub: `Current: ₱${pricingConfig?.electricity_rate ?? "—"}/kWh`, key: "electricity_rate", unit: "₱/kWh", placeholder: String(pricingConfig?.electricity_rate ?? 0) },
-          { label: "Markup Multiplier", sub: `Current: ×${pricingConfig?.markup_multiplier ?? "—"}`, key: "markup_multiplier", unit: "×", placeholder: String(pricingConfig?.markup_multiplier ?? 1) },
-          { label: "Minimum Price", sub: `Current: ₱${pricingConfig?.minimum_price ?? "—"}`, key: "minimum_price", unit: "₱", placeholder: String(pricingConfig?.minimum_price ?? 0) },
-        ].map((field) => (
-          <div key={field.key} className="params-field-row">
-            <div className="params-field-info">
-              <div className="params-field-name">{field.label}</div>
-              <div className="params-field-sub">{field.sub}</div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <label style={{ margin: 0, fontSize: 11, color: T.textDim }}>{field.unit}</label>
-              <input type="number" step="0.01" style={{ width: 130 }} placeholder={field.placeholder} value={pricingDraft[field.key]} onChange={(e) => onPricingChange(field.key, e.target.value === "" ? "" : e.target.value)} />
-            </div>
-          </div>
-        ))}
-        <div className="params-field-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
-          <div className="params-field-info">
-            <div className="params-field-name">Pricing Formula</div>
-            <div className="params-field-sub">Current: <span style={{ fontFamily: T.fontMono, color: T.textMuted }}>{pricingConfig?.formula || "—"}</span></div>
-          </div>
-          <textarea rows={3} placeholder={pricingConfig?.formula || "formula"} value={pricingDraft.formula} onChange={(e) => onPricingChange("formula", e.target.value)} style={{ resize: "vertical", width: "100%", fontFamily: T.fontMono }} />
-        </div>
-        <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-          <button className="btn btn-ghost" onClick={() => { setPricingDraft({ electricity_rate: "", markup_multiplier: "", minimum_price: "", formula: "" }); setMsg("pricing", ""); }}>Reset</button>
-          <button className="btn btn-primary" onClick={savePricing} disabled={saving.pricing}>{saving.pricing ? "Saving…" : "Save Pricing"}</button>
-        </div>
-        <MsgBanner msg={msgs.pricing} />
-      </div>
     </div>
   );
 }
 
-// ─── PRICING SETTINGS VIEW ────────────────────────────────────────────────────
+// ─── PRICING SETTINGS VIEW (UPDATED) ─────────────────────────────────────────
 function PricingSettingsView({ pricingConfig, setPricingConfig }) {
-  const [draft, setDraft] = useState(pricingConfig);
-  const [testError, setTestError] = useState("");
-  const [testPrice, setTestPrice] = useState(null);
+  const [draft, setDraft] = useState(pricingConfig || DEFAULT_PRICING_CONFIG);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
+  const [multiplierEdits, setMultiplierEdits] = useState({});
 
-  useEffect(() => { setDraft(pricingConfig); }, [pricingConfig]);
+  useEffect(() => { if (pricingConfig) setDraft(pricingConfig); }, [pricingConfig]);
   const update = (key, value) => setDraft((c) => ({ ...c, [key]: value }));
-
-  const testFormula = () => {
-    try {
-      const testVars = {
-        grams: 100, hours: 4, filament_real: 65, filament_charged: 120,
-        electricity_real: 16.8, electricity_charged: 25,
-        printer_real: 80, printer_charged: 150,
-        real_total: 161.8, default_charged_total: 295,
-        markup_multiplier: Number(draft.markup_multiplier || 1),
-        minimum_price: Number(draft.minimum_price || 0),
-        electricity_rate: Number(draft.electricity_rate || 0),
-        filament_price_per_gram: 65 / 100, filament_selling_per_gram: 120 / 100,
-        true_cost_per_kg: 650, selling_price_per_kg: 1200, elec_kwh: 0.56,
-        machine_rate: 80, machine_charged: 150,
-        filament_cost: 65, filament_price: 120,
-        electricity_cost: 16.8, electricity_price: 25, total_cost: 161.8,
-        power_kw: 0.14, power_kwh: 0.56, watt_hours: 560,
-        print_hours: 4, print_grams: 100, labor_cost: 150,
-      };
-      const result = _evaluatePricingFormula(draft.formula, testVars);
-      setTestError(""); setTestPrice(Math.max(result, Number(draft.minimum_price || 0)));
-    } catch (err) { setTestPrice(null); setTestError(err.message || "Formula error"); }
-  };
+  const updateMultiplier = (jobType, val) => setMultiplierEdits(e => ({ ...e, [jobType]: val }));
 
   const save = async () => {
     setSaving(true); setSaveMsg("");
+
+    // Merge multiplier edits
+    const mergedMultipliers = { ...(draft.job_type_multipliers ?? DEFAULT_PRICING_CONFIG.job_type_multipliers) };
+    for (const [jt, val] of Object.entries(multiplierEdits)) {
+      if (val !== "" && !Number.isNaN(Number(val))) mergedMultipliers[jt] = Number(val);
+    }
+
     const payload = {
-      electricity_rate: Number(draft.electricity_rate || 0),
-      minimum_price: Number(draft.minimum_price || 0),
-      markup_multiplier: Number(draft.markup_multiplier || 1),
-      formula: draft.formula, updated_at: new Date().toISOString(),
+      electricity_rate:     Number(draft.electricity_rate || 0),
+      minimum_price:        Number(draft.minimum_price || 0),
+      markup_multiplier:    Number(draft.markup_multiplier || 1),
+      formula:              draft.formula,
+      labor_rate:           Number(draft.labor_rate || 0),
+      printer_fee_rate:     Number(draft.printer_fee_rate || 0),
+      markup_rate:          Number(draft.markup_rate || 0),
+      job_type_multipliers: mergedMultipliers,
+      updated_at:           new Date().toISOString(),
     };
+
     const { error } = await supabase.from("pricing_settings").update(payload).eq("id", "default");
-    if (error) { setSaveMsg(`Error: ${error.message}`); } else { setPricingConfig({ ...payload }); setSaveMsg("Saved successfully."); testFormula(); }
+    if (error) {
+      setSaveMsg(`Error: ${error.message}`);
+    } else {
+      setPricingConfig(payload);
+      setMultiplierEdits({});
+      setSaveMsg("Saved successfully.");
+    }
     setSaving(false);
+  };
+
+  const multipliers = draft.job_type_multipliers ?? DEFAULT_PRICING_CONFIG.job_type_multipliers;
+  const jobTypeDescriptions = {
+    "Standard Print":  "Baseline — no adjustment",
+    "Prototype":       "Higher — iteration cost + R&D",
+    "Production Run":  "Lower — volume efficiency discount",
+    "Multicolor":      "Higher — material waste + setup complexity",
+    "Functional Part": "Higher — precision + higher liability",
+    "Display Model":   "Higher — aesthetic premium + finishing",
   };
 
   return (
     <div>
       <div className="page-header">
-        <div className="page-title">Pricing Formula</div>
-        <div className="page-sub">Admin-only pricing controls. Not shown on customer receipts.</div>
+        <div className="page-title">Pricing Settings</div>
+        <div className="page-sub">Global pricing rates and job type multipliers applied to the cost engine.</div>
       </div>
+
       <div className="grid2">
-        <div className="card">
-          <div className="card-title"><span className="card-title-dot" />Editable Formula</div>
-          <div className="input-group">
-            <label>Formula</label>
-            <textarea rows={5} value={draft.formula} onChange={(e) => update("formula", e.target.value)} style={{ fontFamily: T.fontMono, resize: "vertical" }} />
-            {testError && <div className="error-msg">{testError}</div>}
-          </div>
-          <div className="input-row">
-            <div className="input-group"><label>Markup Multiplier</label><input type="number" step="0.05" value={draft.markup_multiplier} onChange={(e) => update("markup_multiplier", +e.target.value)} /></div>
-            <div className="input-group"><label>Minimum Price</label><input type="number" step="1" value={draft.minimum_price} onChange={(e) => update("minimum_price", +e.target.value)} /></div>
-          </div>
-          <div className="input-group"><label>Electricity Rate / kWh (₱)</label><input type="number" step="0.01" value={draft.electricity_rate} onChange={(e) => update("electricity_rate", +e.target.value)} /></div>
-          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-            <button className="btn btn-ghost" style={{ flex: 1 }} onClick={testFormula}>Test Formula</button>
-            <button className="btn btn-primary" style={{ flex: 1 }} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save Pricing"}</button>
-          </div>
-          {saveMsg && (
-            <div style={{ marginTop: 12, padding: "10px 14px", background: saveMsg.startsWith("Error") ? "rgba(255,92,92,0.08)" : T.accentGlow, border: `1px solid ${saveMsg.startsWith("Error") ? "rgba(255,92,92,0.2)" : T.accentDim}`, borderRadius: 8, fontSize: 13, color: saveMsg.startsWith("Error") ? T.danger : T.accent }}>
-              {saveMsg}
+        <div>
+          <div className="card">
+            <div className="card-title"><span className="card-title-dot" />Global Overhead Rates</div>
+            <div style={{ fontSize: 11, color: T.info, padding: "8px 12px", background: "rgba(91,156,246,0.07)", border: "1px solid rgba(91,156,246,0.18)", borderRadius: 8, marginBottom: 16, lineHeight: 1.7, fontFamily: T.fontMono }}>
+              price = total_base_cost × (1 + labor + printer_fee + markup) × job_multiplier
             </div>
-          )}
-          {testPrice !== null && (
-            <div style={{ marginTop: 10, padding: "12px 16px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 9, fontSize: 13, color: T.accent }}>
-              Test output: ₱{testPrice.toFixed(2)} using sample 100g / 4h data.
+            <div className="input-row">
+              <div className="input-group">
+                <label>Labor Rate <span style={{ color: T.info, fontSize: 10 }}>— e.g. 0.20 = 20%</span></label>
+                <div className="input-addon">
+                  <input type="number" step="0.01" min={0} max={2} value={draft.labor_rate ?? 0.20} onChange={(e) => update("labor_rate", +e.target.value)} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <span className="input-suffix">{((draft.labor_rate ?? 0) * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+              <div className="input-group">
+                <label>Printer Fee Rate <span style={{ color: T.info, fontSize: 10 }}>— depreciation overhead</span></label>
+                <div className="input-addon">
+                  <input type="number" step="0.01" min={0} max={2} value={draft.printer_fee_rate ?? 0.10} onChange={(e) => update("printer_fee_rate", +e.target.value)} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <span className="input-suffix">{((draft.printer_fee_rate ?? 0) * 100).toFixed(0)}%</span>
+                </div>
+              </div>
             </div>
-          )}
+            <div className="input-row">
+              <div className="input-group">
+                <label>Markup Rate <span style={{ color: T.accent, fontSize: 10 }}>— profit margin</span></label>
+                <div className="input-addon">
+                  <input type="number" step="0.01" min={0} max={5} value={draft.markup_rate ?? 0.30} onChange={(e) => update("markup_rate", +e.target.value)} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <span className="input-suffix">{((draft.markup_rate ?? 0) * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+              <div className="input-group">
+                <label>Minimum Charge (₱)</label>
+                <div className="input-addon">
+                  <span className="input-prefix">₱</span>
+                  <input type="number" step="10" min={0} value={draft.minimum_price ?? 100} onChange={(e) => update("minimum_price", +e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
+                </div>
+              </div>
+            </div>
+            <div className="input-group">
+              <label>Electricity Rate (₱/kWh)</label>
+              <div className="input-addon">
+                <span className="input-prefix">₱</span>
+                <input type="number" step="0.01" value={draft.electricity_rate ?? 12} onChange={(e) => update("electricity_rate", +e.target.value)} style={{ borderRadius: "0 8px 8px 0" }} />
+              </div>
+            </div>
+
+            {/* Live preview */}
+            {(() => {
+              const base = 100;
+              const oh = (1 + Number(draft.labor_rate ?? 0) + Number(draft.printer_fee_rate ?? 0) + Number(draft.markup_rate ?? 0));
+              const price = Math.max(base * oh, Number(draft.minimum_price ?? 0));
+              return (
+                <div style={{ padding: "10px 14px", background: T.accentGlow, border: `1px solid ${T.accentDim}`, borderRadius: 8, fontSize: 12, marginTop: 4 }}>
+                  <div style={{ color: T.textMuted, marginBottom: 4 }}>Preview at ₱100 base cost (Standard Print):</div>
+                  <div style={{ display: "flex", gap: 16, fontFamily: T.fontMono, flexWrap: "wrap" }}>
+                    <span style={{ color: T.textDim }}>×{oh.toFixed(2)} overhead</span>
+                    <span style={{ color: T.accent }}>→ ₱{price.toFixed(2)} final</span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
         </div>
-        <div className="card">
-          <div className="card-title"><span className="card-title-dot" />Allowed Variables</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {[
-              "grams", "hours", "filament_real", "filament_charged",
-              "electricity_real", "electricity_charged", "printer_real", "printer_charged",
-              "real_total", "default_charged_total", "markup_multiplier", "minimum_price",
-              "machine_rate", "machine_charged", "filament_cost", "filament_price",
-              "electricity_cost", "electricity_price", "total_cost",
-              "filament_price_per_gram", "filament_selling_per_gram",
-              "true_cost_per_kg", "selling_price_per_kg",
-              "elec_kwh", "power_kw", "power_kwh", "watt_hours",
-              "print_hours", "print_grams", "labor_cost",
-            ].map((v) => <span key={v} className="tag" style={{ fontFamily: T.fontMono, padding: "6px 9px" }}>{v}</span>)}
-          </div>
-          <div style={{ marginTop: 18 }}>
-            <div className="card-title"><span className="card-title-dot" />Examples</div>
-            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Simple markup</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>default_charged_total * markup_multiplier</div></div>
-            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Cost-plus target</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>real_total * 2.2</div></div>
-            <div className="rec-card" style={{ marginBottom: 10 }}><div className="rec-title">Machine-rate based</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>machine_rate + filament_price + electricity_price</div></div>
-            <div className="rec-card"><div className="rec-title">Weight and time based</div><div className="rec-val" style={{ fontFamily: T.fontMono }}>(grams * 2.5) + (hours * 35)</div></div>
+
+        <div>
+          <div className="card">
+            <div className="card-title"><span className="card-title-dot" />Job Type Multipliers</div>
+            <p style={{ fontSize: 12, color: T.textMuted, marginBottom: 16 }}>Applied after overhead. ×1.00 = baseline rate.</p>
+            {JOB_TYPES.map((jt) => {
+              const current = Number(multipliers[jt] ?? 1);
+              const edited = multiplierEdits[jt];
+              const displayVal = edited !== undefined ? edited : current;
+              return (
+                <div key={jt} style={{ padding: "10px 0", borderBottom: `1px solid ${T.border}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                    <div>
+                      <div style={{ fontSize: 13, color: T.text, fontWeight: 500 }}>{jt}</div>
+                      <div style={{ fontSize: 11, color: T.textDim, marginTop: 1 }}>{jobTypeDescriptions[jt]}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <span className="input-prefix" style={{ borderRadius: "8px 0 0 8px", padding: "6px 8px", fontSize: 12 }}>×</span>
+                      <input type="number" step="0.05" min={0.1} max={5} style={{ width: 80, borderRadius: "0 8px 8px 0", padding: "6px 8px" }}
+                        value={displayVal}
+                        onChange={(e) => updateMultiplier(jt, e.target.value === "" ? "" : e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  {/* Mini bar showing relative multiplier */}
+                  <div style={{ height: 3, background: T.border, borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ height: "100%", borderRadius: 2, background: Number(displayVal) >= 1 ? T.accent : T.warn, width: `${Math.min(Number(displayVal || 1) / 2 * 100, 100)}%`, transition: "width 0.3s" }} />
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+        <button className="btn btn-ghost" onClick={() => { setDraft(pricingConfig || DEFAULT_PRICING_CONFIG); setMultiplierEdits({}); setSaveMsg(""); }}>Reset</button>
+        <button className="btn btn-primary" style={{ minWidth: 140 }} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save All Settings"}</button>
+      </div>
+      {saveMsg && (
+        <div style={{ marginTop: 12, padding: "10px 14px", background: saveMsg.startsWith("Error") ? "rgba(255,92,92,0.08)" : T.accentGlow, border: `1px solid ${saveMsg.startsWith("Error") ? "rgba(255,92,92,0.2)" : T.accentDim}`, borderRadius: 8, fontSize: 13, color: saveMsg.startsWith("Error") ? T.danger : T.accent }}>
+          {saveMsg}
+        </div>
+      )}
     </div>
   );
 }
 
-// ─── JOBS VIEW (Job Orders) ──────────────────────────────────────────────────
+// ─── JOBS VIEW ────────────────────────────────────────────────────────────────
 function JobsView({ dbJobs, reloadDbJobs }) {
   const [payingJob, setPayingJob] = useState(null);
   const [payForm, setPayForm] = useState({ amount: "", method: "cash", reference_number: "" });
@@ -2035,8 +1924,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
     try {
       const { error: payErr } = await supabase.from("payments").insert({ job_id: payingJob.id, amount: Number(payForm.amount), method: payForm.method, reference_number: payForm.reference_number || null });
       if (payErr) throw new Error(payErr.message);
-      const { error: jobErr } = await supabase.from("jobs").update({ payment_status: "paid" }).eq("id", payingJob.id);
-      if (jobErr) throw new Error(jobErr.message);
+      await supabase.from("jobs").update({ payment_status: "paid" }).eq("id", payingJob.id);
       await reloadDbJobs();
       setPayingJob(null); setPayForm({ amount: "", method: "cash", reference_number: "" });
     } catch (err) { setPayError(err.message); }
@@ -2046,8 +1934,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
   const updateJobStatus = async (id, status) => {
     setUpdatingStatus(id);
     await supabase.from("jobs").update({ status }).eq("id", id);
-    await reloadDbJobs();
-    setUpdatingStatus(null);
+    await reloadDbJobs(); setUpdatingStatus(null);
   };
 
   if (dbJobs.length === 0)
@@ -2055,7 +1942,6 @@ function JobsView({ dbJobs, reloadDbJobs }) {
       <div>
         <div className="page-header"><div className="page-title">Job Orders</div></div>
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>◷</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
         </div>
       </div>
@@ -2072,7 +1958,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
 
   return (
     <div>
-      <div className="page-header"><div className="page-title">Job Orders</div><div className="page-sub">{dbJobs.length} total jobs · {unpaidCount} unpaid</div></div>
+      <div className="page-header"><div className="page-title">Job Orders</div><div className="page-sub">{dbJobs.length} total · {unpaidCount} unpaid</div></div>
       <div className="grid4" style={{ marginBottom: 20 }}>
         <div className="stat-card"><div className="stat-label">Total Revenue</div><div className="stat-val">₱{total.toFixed(2)}</div></div>
         <div className="stat-card"><div className="stat-label">Total Profit</div><div className="stat-val stat-profit">₱{totalProfit.toFixed(2)}</div></div>
@@ -2081,9 +1967,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
       </div>
       <div className="card">
         <table className="table">
-          <thead>
-            <tr><th>ID</th><th>Date</th><th>Client</th><th>Type</th><th>Filament</th><th>Params</th><th>Revenue</th><th>Profit</th><th>Status</th><th>Payment</th><th>Actions</th></tr>
-          </thead>
+          <thead><tr><th>ID</th><th>Date</th><th>Client</th><th>Type</th><th>Params</th><th>Revenue</th><th>Profit</th><th>Status</th><th>Payment</th><th>Actions</th></tr></thead>
           <tbody>
             {dbJobs.map((j) => {
               const pc = PAYMENT_COLORS[j.payment_status] ?? PAYMENT_COLORS.unpaid;
@@ -2093,7 +1977,6 @@ function JobsView({ dbJobs, reloadDbJobs }) {
                   <td style={{ fontSize: 11, whiteSpace: "nowrap" }}>{j.created_at ? new Date(j.created_at).toLocaleDateString() : "—"}</td>
                   <td style={{ fontWeight: 500, color: T.text }}>{j.client_name}</td>
                   <td><span className="tag">{j.job_type}</span></td>
-                  <td style={{ fontSize: 11, color: T.textMuted }}>{j.filaments ? `${j.filaments.brand} ${j.filaments.type} ${j.filaments.color}` : "—"}</td>
                   <td style={{ fontFamily: T.fontMono, fontSize: 11 }}>{j.total_grams}g · {Number(j.total_hours).toFixed(2)}h</td>
                   <td style={{ fontFamily: T.fontMono, color: T.text, fontWeight: 600 }}>₱{Number(j.charged_total).toFixed(2)}</td>
                   <td style={{ fontFamily: T.fontMono, color: T.accent }}>+₱{Number(j.profit_total).toFixed(2)}</td>
@@ -2105,7 +1988,7 @@ function JobsView({ dbJobs, reloadDbJobs }) {
                   <td><span style={{ padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 600, background: pc.bg, border: `1px solid ${pc.border}`, color: pc.text }}>{j.payment_status || "unpaid"}</span></td>
                   <td>
                     {j.payment_status !== "paid" && (
-                      <button className="btn btn-ghost" style={{ padding: "3px 9px", fontSize: 11 }} onClick={() => { setPayingJob(j); setPayForm({ amount: String(j.charged_total), method: "cash", reference_number: "" }); setPayError(""); }}>💳 Pay</button>
+                      <button className="btn btn-ghost" style={{ padding: "3px 9px", fontSize: 11 }} onClick={() => { setPayingJob(j); setPayForm({ amount: String(j.charged_total), method: "cash", reference_number: "" }); setPayError(""); }}>Pay</button>
                     )}
                   </td>
                 </tr>
@@ -2114,14 +1997,12 @@ function JobsView({ dbJobs, reloadDbJobs }) {
           </tbody>
         </table>
       </div>
-
       {payingJob && (
         <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setPayingJob(null)}>
           <div className="modal" style={{ width: 420 }}>
             <h3>Record Payment</h3>
             <div style={{ marginBottom: 16, padding: "10px 14px", background: T.bgInput, borderRadius: 8, fontSize: 13 }}>
-              <strong style={{ color: T.text }}>{payingJob.client_name}</strong>
-              <span style={{ color: T.textMuted }}> · {payingJob.job_type}</span>
+              <strong style={{ color: T.text }}>{payingJob.client_name}</strong><span style={{ color: T.textMuted }}> · {payingJob.job_type}</span>
               <div style={{ color: T.accent, fontFamily: T.fontMono, marginTop: 4, fontSize: 15, fontWeight: 600 }}>₱{Number(payingJob.charged_total).toFixed(2)}</div>
             </div>
             <div className="input-group"><label>Amount (₱)</label><input type="number" min={0} step={0.01} value={payForm.amount} onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))} /></div>
