@@ -116,7 +116,6 @@ function _computeEngine(job, PRINTER_DB) {
   }, 0).toFixed(4));
 
   try {
-    // FIX: all aliases defined together so none are undefined in formula
     const formulaVariables = {
       grams,
       hours,
@@ -130,12 +129,13 @@ function _computeEngine(job, PRINTER_DB) {
       default_charged_total: defaultChargedTotal,
       markup_multiplier: Number(pricingConfig.markup_multiplier || 1),
       minimum_price: Number(pricingConfig.minimum_price || 0),
+      electricity_rate: Number(pricingConfig.electricity_rate || 0),
       filament_price_per_gram: trueCostKg / 1000,
       filament_selling_per_gram: sellingKg > 0 ? sellingKg / 1000 : trueCostKg / 1000,
       true_cost_per_kg: trueCostKg,
       selling_price_per_kg: sellingKg > 0 ? sellingKg : trueCostKg,
       elec_kwh: elecKwh,
-      // Aliases — all defined so any formula variable works without error
+      // Common aliases
       machine_rate: printerReal,
       machine_charged: printerCharged,
       filament_cost: filamentReal,
@@ -433,18 +433,20 @@ export default function App() {
           { data: filData, error: filErr },
           { data: prData, error: prErr },
           { data: psData, error: psErr },
-          { data: ordersData },
-          { data: jobsData },
+          { data: ordersData, error: ordersErr },
+          { data: jobsData, error: jobsErr },
         ] = await Promise.all([
           supabase.from("filaments").select("*").eq("active", true).order("brand"),
           supabase.from("printers").select("*").eq("active", true).order("name"),
           supabase.from("pricing_settings").select("*").eq("id", "default").single(),
-          supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false }).then(r => r).catch(() => ({ data: [] })),
-          supabase.from("jobs").select("*, filaments(brand,type,color,finish), job_printer_allocations(printer_id,percentage,printers(name))").order("created_at", { ascending: false }).limit(300).then(r => r).catch(() => ({ data: [] })),
+          supabase.from("job_orders").select("*, filaments(brand,type,color), printers(name)").order("deadline", { ascending: true, nullsFirst: false }),
+          supabase.from("jobs").select("*, filaments(brand,type,color,finish), job_printer_allocations(printer_id,percentage,printers(name))").order("created_at", { ascending: false }).limit(300),
         ]);
         if (filErr) throw new Error(`Filaments: ${filErr.message}`);
         if (prErr) throw new Error(`Printers: ${prErr.message}`);
         if (psErr && psErr.code !== "PGRST116") throw new Error(`Pricing: ${psErr.message}`);
+        if (ordersErr) console.warn("Job orders:", ordersErr.message);
+        if (jobsErr) console.warn("Jobs:", jobsErr.message);
         setFilaments(filData || []);
         setPrinterRows(prData || []);
         const dbMap = {};
@@ -651,11 +653,6 @@ export default function App() {
     setShowReceipt(false); setSaveError(""); setActiveOrderId(null);
   };
 
-  // FIX: "Add New Order" just goes to New Job wizard — no separate form
-  const handleAddNewOrder = () => {
-    resetJob();
-    setView("pos");
-  };
 
   if (dbLoading) {
     return (
@@ -735,7 +732,6 @@ export default function App() {
               jobOrders={jobOrders} setJobOrders={setJobOrders}
               filaments={filaments} printerRows={printerRows}
               startJobFromOrder={startJobFromOrder}
-              onAddNew={handleAddNewOrder}
             />
           )}
           {view === "jobs" && <JobsView dbJobs={dbJobs} reloadDbJobs={reloadDbJobs} />}
@@ -1713,6 +1709,7 @@ function PricingSettingsView({ pricingConfig, setPricingConfig }) {
         real_total: 161.8, default_charged_total: 295,
         markup_multiplier: Number(draft.markup_multiplier || 1),
         minimum_price: Number(draft.minimum_price || 0),
+        electricity_rate: Number(draft.electricity_rate || 0),
         filament_price_per_gram: 65 / 100,
         filament_selling_per_gram: 120 / 100,
         true_cost_per_kg: 650,
@@ -1845,16 +1842,21 @@ function DeadlineBadge({ deadline }) {
   return <span style={{ fontSize: 12, color: T.textMuted }}>{deadline} ({diff}d)</span>;
 }
 
-// FIX: onAddNew now just redirects to New Job wizard — no separate form modal
-function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder, onAddNew }) {
+function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJobFromOrder }) {
+  const PRIORITIES = ["Low", "Normal", "High", "Urgent"];
+  const PRIORITY_COLOR = { Low: T.textDim, Normal: T.textMuted, High: T.warn, Urgent: T.danger };
+  const emptyForm = { client_name: "", title: "", description: "", filament_id: "", printer_id: "", deadline: "", status: "Queued", priority: "Normal", estimated_grams: "", estimated_hours: "" };
+
+  const [showForm, setShowForm] = useState(false);
   const [editOrder, setEditOrder] = useState(null);
+  const [form, setForm] = useState(emptyForm);
   const [filterStatus, setFilterStatus] = useState("All");
-  const [sortBy, setSortBy] = useState("deadline");
+  const [sortBy, setSortBy] = useState("priority");
   const [opLoading, setOpLoading] = useState(false);
   const [opError, setOpError] = useState("");
   const [confirmDel, setConfirmDel] = useState(null);
-  const [form, setForm] = useState(null);
 
+  const openAdd = () => { setForm(emptyForm); setEditOrder(null); setShowForm(true); setOpError(""); };
   const openEdit = (o) => {
     setForm({
       client_name: o.client_name || "", title: o.title || "", description: o.description || "",
@@ -1863,29 +1865,43 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
       priority: o.priority || "Normal",
       estimated_grams: o.estimated_grams ?? "", estimated_hours: o.estimated_hours ?? "",
     });
-    setEditOrder(o); setOpError("");
+    setEditOrder(o); setShowForm(true); setOpError("");
   };
 
   const reloadOrders = async () => {
-    const { data } = await supabase.from("job_orders").select("*").order("deadline", { ascending: true, nullsFirst: false });
+    const { data, error } = await supabase.from("job_orders")
+      .select("*, filaments(brand,type,color), printers(name)")
+      .order("deadline", { ascending: true, nullsFirst: false });
+    if (error) console.warn("Reload orders error:", error.message);
     if (data) setJobOrders(data);
   };
 
-  const saveEdit = async () => {
+  const saveOrder = async () => {
     if (!form.client_name.trim() || !form.title.trim()) { setOpError("Client name and title are required."); return; }
     setOpLoading(true); setOpError("");
     const payload = {
-      client_name: form.client_name.trim(), title: form.title.trim(), description: form.description || "",
-      filament_id: form.filament_id || null, printer_id: form.printer_id || null,
-      deadline: form.deadline || null, status: form.status, priority: form.priority,
+      client_name: form.client_name.trim(),
+      title: form.title.trim(),
+      description: form.description || "",
+      filament_id: form.filament_id || null,
+      printer_id: form.printer_id || null,
+      deadline: form.deadline || null,
+      status: form.status,
+      priority: form.priority,
       estimated_grams: form.estimated_grams !== "" ? Number(form.estimated_grams) : null,
       estimated_hours: form.estimated_hours !== "" ? Number(form.estimated_hours) : null,
       updated_at: new Date().toISOString(),
     };
     try {
-      const { error } = await supabase.from("job_orders").update(payload).eq("id", editOrder.id);
-      if (error) throw new Error(error.message);
-      await reloadOrders(); setEditOrder(null); setForm(null);
+      if (editOrder) {
+        const { error } = await supabase.from("job_orders").update(payload).eq("id", editOrder.id);
+        if (error) throw new Error(error.message);
+      } else {
+        const { error } = await supabase.from("job_orders").insert({ ...payload, created_at: new Date().toISOString() });
+        if (error) throw new Error(error.message);
+      }
+      await reloadOrders();
+      setShowForm(false); setEditOrder(null); setForm(emptyForm);
     } catch (err) { setOpError(err.message || "Failed to save."); }
     finally { setOpLoading(false); }
   };
@@ -1903,21 +1919,24 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
     else setOpError(error.message);
   };
 
-  const PRIORITIES = ["Low", "Normal", "High", "Urgent"];
-  const PRIORITY_COLOR = { Low: T.textDim, Normal: T.textMuted, High: T.warn, Urgent: T.danger };
-
-  const filtered = jobOrders
+  const filtered = [...jobOrders]
     .filter((o) => filterStatus === "All" || o.status === filterStatus)
     .sort((a, b) => {
-      if (sortBy === "deadline") {
+      if (sortBy === "priority") {
+        const pi = (p) => ["Urgent", "High", "Normal", "Low"].indexOf(p ?? "Normal");
+        const diff = pi(a.priority) - pi(b.priority);
+        if (diff !== 0) return diff;
+        // secondary: deadline
         if (!a.deadline && !b.deadline) return 0;
         if (!a.deadline) return 1;
         if (!b.deadline) return -1;
         return new Date(a.deadline) - new Date(b.deadline);
       }
-      if (sortBy === "priority") {
-        const pi = (p) => ["Urgent", "High", "Normal", "Low"].indexOf(p ?? "Normal");
-        return pi(a.priority) - pi(b.priority);
+      if (sortBy === "deadline") {
+        if (!a.deadline && !b.deadline) return 0;
+        if (!a.deadline) return 1;
+        if (!b.deadline) return -1;
+        return new Date(a.deadline) - new Date(b.deadline);
       }
       if (sortBy === "status") return (a.status || "").localeCompare(b.status || "");
       return new Date(b.created_at || 0) - new Date(a.created_at || 0);
@@ -1932,39 +1951,36 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
           <div className="page-title">Job Orders</div>
           <div className="page-sub">{jobOrders.length} total · {counts.Queued || 0} queued · {counts.Printing || 0} printing</div>
         </div>
-        {/* FIX: clicking this goes directly to New Job wizard, no separate modal */}
-        <button className="btn btn-primary" onClick={onAddNew}>+ New Job Order</button>
-      </div>
-
-      <div style={{ marginBottom: 16, padding: "10px 16px", background: T.bgInput, border: `1px solid ${T.border}`, borderRadius: 10, fontSize: 12, color: T.textMuted }}>
-        💡 <strong style={{ color: T.text }}>How it works:</strong> Click <strong style={{ color: T.accent }}>+ New Job Order</strong> to open the New Job wizard — fill in client details, filament and parameters, then save as an order at the end. Click <strong style={{ color: T.accent }}>▶ Start Job</strong> on any queued order to load it for pricing and finalizing.
+        <button className="btn btn-primary" onClick={openAdd}>+ Add Order</button>
       </div>
 
       {opError && (
-        <div style={{ marginBottom: 16, padding: "12px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>
+        <div style={{ marginBottom: 12, padding: "10px 16px", background: "rgba(255,92,92,0.08)", border: "1px solid rgba(255,92,92,0.25)", borderRadius: 10, fontSize: 13, color: T.danger }}>{opError}</div>
       )}
 
-      {/* Status filter pills */}
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 20 }}>
-        {["All", ...ORDER_STATUSES].map((s) => {
-          const c = s === "All" ? null : STATUS_COLORS[s];
-          const active = filterStatus === s;
-          return (
-            <button key={s} onClick={() => setFilterStatus(s)} style={{
-              padding: "5px 12px", borderRadius: 20, border: `1px solid ${active ? (c?.border ?? T.accent) : T.border}`,
-              background: active ? (c?.bg ?? T.accentGlow) : "transparent",
-              color: active ? (c?.text ?? T.accent) : T.textMuted,
-              fontSize: 12, fontWeight: active ? 600 : 400, cursor: "pointer",
-            }}>
-              {s}{s !== "All" && counts[s] !== undefined ? ` (${counts[s]})` : s === "All" ? ` (${jobOrders.length})` : ""}
-            </button>
-          );
-        })}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+      {/* Filter + Sort bar */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", flex: 1 }}>
+          {["All", ...ORDER_STATUSES].map((s) => {
+            const c = s === "All" ? null : STATUS_COLORS[s];
+            const active = filterStatus === s;
+            return (
+              <button key={s} onClick={() => setFilterStatus(s)} style={{
+                padding: "4px 11px", borderRadius: 20, border: `1px solid ${active ? (c?.border ?? T.accent) : T.border}`,
+                background: active ? (c?.bg ?? T.accentGlow) : "transparent",
+                color: active ? (c?.text ?? T.accent) : T.textMuted,
+                fontSize: 11, fontWeight: active ? 600 : 400, cursor: "pointer",
+              }}>
+                {s}{s === "All" ? ` (${jobOrders.length})` : counts[s] ? ` (${counts[s]})` : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 11, color: T.textDim }}>Sort:</span>
-          {["deadline", "priority", "status", "created"].map((s) => (
+          {["priority", "deadline", "status", "created"].map((s) => (
             <button key={s} onClick={() => setSortBy(s)} style={{
-              padding: "4px 10px", borderRadius: 6, border: `1px solid ${sortBy === s ? T.accent : T.border}`,
+              padding: "4px 9px", borderRadius: 6, border: `1px solid ${sortBy === s ? T.accent : T.border}`,
               background: sortBy === s ? T.accentGlow : "transparent",
               color: sortBy === s ? T.accent : T.textMuted, fontSize: 11, cursor: "pointer",
             }}>{s.charAt(0).toUpperCase() + s.slice(1)}</button>
@@ -1976,55 +1992,59 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         <div className="card" style={{ textAlign: "center", padding: "48px 24px" }}>
           <div style={{ fontSize: 32, marginBottom: 12 }}>📋</div>
           <div style={{ fontSize: 14, color: T.textMuted }}>{filterStatus === "All" ? "No job orders yet" : `No orders with status "${filterStatus}"`}</div>
-          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Click "+ New Job Order" to start a job through the New Job wizard</div>
-          <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={onAddNew}>+ New Job Order</button>
+          <div style={{ fontSize: 12, color: T.textDim, marginTop: 4 }}>Add orders to track and prioritize what to print</div>
+          {filterStatus === "All" && <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={openAdd}>+ Add Order</button>}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filtered.map((order) => {
-            const fil = filaments.find((f) => f.id === order.filament_id);
-            const printer = printerRows.find((p) => p.id === order.printer_id);
+            // joined data from select("*, filaments(...), printers(...)")
+            const filName = order.filaments ? `${order.filaments.brand} ${order.filaments.type} ${order.filaments.color}` : null;
+            const filColor = order.filaments ? getFilColor(order.filaments.color) : null;
+            const printerName = order.printers ? order.printers.name : null;
             return (
-              <div key={order.id} className="card" style={{ padding: "16px 20px", marginBottom: 0, borderLeft: `3px solid ${STATUS_COLORS[order.status]?.text ?? T.border}` }}>
+              <div key={order.id} className="card" style={{ padding: "14px 18px", marginBottom: 0, borderLeft: `3px solid ${STATUS_COLORS[order.status]?.text ?? T.border}` }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
                   <div style={{ flex: 1, minWidth: 0 }}>
+                    {/* Title row */}
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 4 }}>
-                      <span style={{ fontSize: 15, fontWeight: 600, color: T.text }}>{order.title}</span>
+                      <span style={{ fontSize: 14, fontWeight: 600, color: T.text }}>{order.title}</span>
                       <StatusBadge status={order.status} />
-                      {order.priority && order.priority !== "Normal" && (
-                        <span style={{ fontSize: 11, fontWeight: 600, color: PRIORITY_COLOR[order.priority] }}>● {order.priority}</span>
-                      )}
+                      <span style={{ fontSize: 11, fontWeight: 600, color: PRIORITY_COLOR[order.priority] ?? T.textMuted }}>
+                        {order.priority === "Urgent" ? "🔴" : order.priority === "High" ? "🟠" : order.priority === "Normal" ? "🟡" : "⚪"} {order.priority}
+                      </span>
                     </div>
-                    <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 6 }}>
-                      Client: <strong style={{ color: T.text }}>{order.client_name}</strong>
-                      {fil && <> · <span className="filament-color-dot" style={{ background: getFilColor(fil.color), display: "inline-block", width: 8, height: 8, borderRadius: "50%", verticalAlign: "middle", margin: "0 3px" }} />{fil.brand} {fil.type} {fil.color}</>}
-                      {printer && <> · {printer.name}</>}
+                    {/* Client + resources */}
+                    <div style={{ fontSize: 12, color: T.textMuted, marginBottom: 4 }}>
+                      <strong style={{ color: T.text }}>{order.client_name}</strong>
+                      {filName && <> · <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}><span style={{ width: 8, height: 8, borderRadius: "50%", background: filColor, display: "inline-block" }} />{filName}</span></>}
+                      {printerName && <> · {printerName}</>}
                     </div>
-                    {order.description && <div style={{ fontSize: 12, color: T.textDim, marginBottom: 6 }}>{order.description}</div>}
-                    <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-                      <div style={{ fontSize: 12, color: T.textMuted }}>Deadline: <DeadlineBadge deadline={order.deadline} /></div>
-                      {order.estimated_grams && <div style={{ fontSize: 12, color: T.textMuted }}>~<span style={{ fontFamily: T.fontMono, color: T.text }}>{order.estimated_grams}g</span></div>}
+                    {order.description && <div style={{ fontSize: 11, color: T.textDim, marginBottom: 4 }}>{order.description}</div>}
+                    {/* Meta row */}
+                    <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "center" }}>
+                      <span style={{ fontSize: 11, color: T.textMuted }}>Deadline: <DeadlineBadge deadline={order.deadline} /></span>
+                      {order.estimated_grams && <span style={{ fontSize: 11, color: T.textMuted }}>~<span style={{ fontFamily: T.fontMono, color: T.text }}>{order.estimated_grams}g</span></span>}
                       {order.estimated_hours != null && order.estimated_hours !== "" && (
-                        <div style={{ fontSize: 12, color: T.textMuted }}>
-                          ~<span style={{ fontFamily: T.fontMono, color: T.text }}>{Math.floor(order.estimated_hours)}h {Math.round((order.estimated_hours % 1) * 60)}m</span>
-                        </div>
+                        <span style={{ fontSize: 11, color: T.textMuted }}>~<span style={{ fontFamily: T.fontMono, color: T.text }}>{Math.floor(Number(order.estimated_hours))}h {Math.round((Number(order.estimated_hours) % 1) * 60)}m</span></span>
                       )}
                     </div>
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                  {/* Actions */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", flexShrink: 0 }}>
                     <select value={order.status} onChange={(e) => updateStatus(order.id, e.target.value)}
-                      style={{ fontSize: 12, padding: "5px 8px", background: STATUS_COLORS[order.status]?.bg, border: `1px solid ${STATUS_COLORS[order.status]?.border}`, color: STATUS_COLORS[order.status]?.text, borderRadius: 6, cursor: "pointer" }}>
+                      style={{ fontSize: 11, padding: "4px 7px", background: STATUS_COLORS[order.status]?.bg ?? T.bgInput, border: `1px solid ${STATUS_COLORS[order.status]?.border ?? T.border}`, color: STATUS_COLORS[order.status]?.text ?? T.textMuted, borderRadius: 6, cursor: "pointer" }}>
                       {ORDER_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                     </select>
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div style={{ display: "flex", gap: 5 }}>
                       {order.status !== "Done" && order.status !== "Cancelled" && (
                         <button className="btn btn-primary" style={{ padding: "4px 10px", fontSize: 11 }} onClick={async () => {
                           await updateStatus(order.id, "Printing");
                           startJobFromOrder({ ...order, status: "Printing" });
                         }}>▶ Start Job</button>
                       )}
-                      <button className="btn btn-ghost" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => openEdit(order)}>Edit</button>
-                      <button className="btn btn-danger" style={{ padding: "4px 10px", fontSize: 11 }} onClick={() => setConfirmDel(order)}>✕</button>
+                      <button className="btn btn-ghost" style={{ padding: "4px 9px", fontSize: 11 }} onClick={() => openEdit(order)}>Edit</button>
+                      <button className="btn btn-danger" style={{ padding: "4px 9px", fontSize: 11 }} onClick={() => setConfirmDel(order)}>✕</button>
                     </div>
                   </div>
                 </div>
@@ -2048,43 +2068,48 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
         </div>
       )}
 
-      {/* Edit modal — only for editing existing orders, not creating new */}
-      {editOrder && form && (
-        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && (setEditOrder(null), setForm(null))}>
-          <div className="modal" style={{ width: 540, maxHeight: "90vh", overflowY: "auto" }}>
-            <h3>Edit Job Order</h3>
+      {/* Add / Edit modal */}
+      {showForm && (
+        <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && setShowForm(false)}>
+          <div className="modal" style={{ width: 520, maxHeight: "90vh", overflowY: "auto" }}>
+            <h3>{editOrder ? "Edit Order" : "New Job Order"}</h3>
+
             <div className="input-row">
               <div className="input-group">
                 <label>Client Name *</label>
-                <input type="text" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} />
+                <input type="text" placeholder="e.g. Maria Santos" value={form.client_name} onChange={(e) => setForm((f) => ({ ...f, client_name: e.target.value }))} />
               </div>
               <div className="input-group">
                 <label>Deadline</label>
                 <input type="date" value={form.deadline} onChange={(e) => setForm((f) => ({ ...f, deadline: e.target.value }))} />
               </div>
             </div>
+
             <div className="input-group">
               <label>Job Title *</label>
-              <input type="text" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
+              <input type="text" placeholder="e.g. Dragon figurine ×2, Phone stand" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} />
             </div>
+
             <div className="input-group">
               <label>Description / Notes</label>
-              <textarea rows={2} value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} />
+              <textarea rows={2} placeholder="Color, special requirements, file name…" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} style={{ resize: "none" }} />
             </div>
+
             <div className="input-row">
-              <div className="input-group">
-                <label>Status</label>
-                <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
-                  {ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}
-                </select>
-              </div>
               <div className="input-group">
                 <label>Priority</label>
                 <select value={form.priority} onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}>
                   {PRIORITIES.map((p) => <option key={p}>{p}</option>)}
                 </select>
               </div>
+              <div className="input-group">
+                <label>Status</label>
+                <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))}>
+                  {ORDER_STATUSES.map((s) => <option key={s}>{s}</option>)}
+                </select>
+              </div>
             </div>
+
             <div className="input-row">
               <div className="input-group">
                 <label>Filament (optional)</label>
@@ -2101,26 +2126,30 @@ function JobOrdersView({ jobOrders, setJobOrders, filaments, printerRows, startJ
                 </select>
               </div>
             </div>
+
             <div className="input-row">
               <div className="input-group">
-                <label>Est. Weight (g)</label>
+                <label>Est. Weight</label>
                 <div className="input-addon">
-                  <input type="number" min={1} step={1} value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <input type="number" min={1} step={1} placeholder="e.g. 120" value={form.estimated_grams} onChange={(e) => setForm((f) => ({ ...f, estimated_grams: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
                   <span className="input-suffix">g</span>
                 </div>
               </div>
               <div className="input-group">
-                <label>Est. Time (hours)</label>
+                <label>Est. Time</label>
                 <div className="input-addon">
-                  <input type="number" min={0} step={0.5} value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
+                  <input type="number" min={0} step={0.5} placeholder="e.g. 5.5" value={form.estimated_hours} onChange={(e) => setForm((f) => ({ ...f, estimated_hours: e.target.value }))} style={{ borderRadius: "8px 0 0 8px" }} />
                   <span className="input-suffix">hrs</span>
                 </div>
               </div>
             </div>
+
             {opError && <div className="error-msg" style={{ marginBottom: 8 }}>{opError}</div>}
             <div style={{ display: "flex", gap: 10, marginTop: 8 }}>
-              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setEditOrder(null); setForm(null); }} disabled={opLoading}>Cancel</button>
-              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveEdit} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>{opLoading ? "Saving…" : "Update Order"}</button>
+              <button className="btn btn-ghost" style={{ flex: 1 }} onClick={() => { setShowForm(false); setEditOrder(null); setForm(emptyForm); }} disabled={opLoading}>Cancel</button>
+              <button className="btn btn-primary" style={{ flex: 1 }} onClick={saveOrder} disabled={!form.client_name.trim() || !form.title.trim() || opLoading}>
+                {opLoading ? "Saving…" : editOrder ? "Update Order" : "Add Order"}
+              </button>
             </div>
           </div>
         </div>
