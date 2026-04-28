@@ -2026,25 +2026,19 @@ function AnalyticsView({ dbJobs }) {
     return (
       <div>
         <div className="page-header"><div className="page-title">Analytics</div></div>
-        <div className="card" style={{ textAlign: "center", padding: "48px" }}>
-          <div style={{ fontSize: 14, color: T.textMuted }}>No jobs in database yet</div>
-        </div>
+        <div className="card" style={{ textAlign: "center", padding: "48px" }}><div style={{ fontSize: 14, color: T.textMuted }}>No jobs yet</div></div>
       </div>
     );
 
-  const totalRev = dbJobs.reduce((s, j) => s + Number(j.charged_total || 0), 0);
-  const totalCost = dbJobs.reduce((s, j) => s + Number(j.real_total || 0), 0);
+  const totalRev    = dbJobs.reduce((s, j) => s + Number(j.charged_total || 0), 0);
+  const totalCost   = dbJobs.reduce((s, j) => s + Number(j.real_total || 0), 0);
   const totalProfit = dbJobs.reduce((s, j) => s + Number(j.profit_total || 0), 0);
-  const avgMargin = totalRev > 0 ? (totalProfit / totalRev) * 100 : 0;
+  const avgMargin   = totalRev > 0 ? (totalProfit / totalRev) * 100 : 0;
   const byType = {};
   dbJobs.forEach((j) => { if (j.job_type) byType[j.job_type] = (byType[j.job_type] || 0) + 1; });
   const maxTypeCount = Math.max(...Object.values(byType), 1);
-  const filamentProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.filament?.profit ?? 0), 0);
-  const elecProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.electricity?.profit ?? 0), 0);
-  const printerProfit = dbJobs.reduce((s, j) => s + Number(j.cost_result?.printer_usage?.profit ?? 0), 0);
-  const maxProfit2 = Math.max(filamentProfit, elecProfit, printerProfit, 0.01);
-  const paidCount = dbJobs.filter((j) => j.payment_status === "paid").length;
-  const unpaidRev = dbJobs.filter((j) => j.payment_status !== "paid").reduce((s, j) => s + Number(j.charged_total || 0), 0);
+  const paidCount    = dbJobs.filter((j) => j.payment_status === "paid").length;
+  const unpaidRev    = dbJobs.filter((j) => j.payment_status !== "paid").reduce((s, j) => s + Number(j.charged_total || 0), 0);
 
   return (
     <div>
@@ -2059,27 +2053,15 @@ function AnalyticsView({ dbJobs }) {
         <div className="stat-card"><div className="stat-label">Paid Jobs</div><div className="stat-val" style={{ color: T.accent }}>{paidCount} / {dbJobs.length}</div><div className="stat-sub">{dbJobs.length - paidCount} pending</div></div>
         <div className="stat-card"><div className="stat-label">Outstanding</div><div className="stat-val" style={{ color: unpaidRev > 0 ? T.warn : T.accent }}>₱{unpaidRev.toFixed(2)}</div><div className="stat-sub">Unpaid revenue</div></div>
       </div>
-      <div className="grid2">
-        <div className="card">
-          <div className="card-title"><span className="card-title-dot" />Profit by Component</div>
-          {[["Filament", filamentProfit], ["Electricity", elecProfit], ["Printer Usage", printerProfit]].map(([label, val]) => (
-            <div key={label} className="profit-bar-wrap">
-              <span className="profit-bar-label">{label}</span>
-              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(Math.max(val, 0) / maxProfit2) * 100}%`, background: T.accent }} /></div>
-              <span className="profit-bar-val">₱{val.toFixed(2)}</span>
-            </div>
-          ))}
-        </div>
-        <div className="card">
-          <div className="card-title"><span className="card-title-dot" />Jobs by Type</div>
-          {Object.entries(byType).map(([t, c]) => (
-            <div key={t} className="profit-bar-wrap">
-              <span className="profit-bar-label" style={{ fontSize: 11 }}>{t}</span>
-              <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(c / maxTypeCount) * 100}%`, background: T.purple }} /></div>
-              <span className="profit-bar-val" style={{ color: T.purple }}>{c}</span>
-            </div>
-          ))}
-        </div>
+      <div className="card">
+        <div className="card-title"><span className="card-title-dot" />Jobs by Type</div>
+        {Object.entries(byType).map(([t, c]) => (
+          <div key={t} className="profit-bar-wrap">
+            <span className="profit-bar-label" style={{ fontSize: 11 }}>{t}</span>
+            <div className="profit-bar-track"><div className="profit-bar-fill" style={{ width: `${(c / maxTypeCount) * 100}%`, background: T.purple }} /></div>
+            <span className="profit-bar-val" style={{ color: T.purple }}>{c}</span>
+          </div>
+        ))}
       </div>
     </div>
   );
